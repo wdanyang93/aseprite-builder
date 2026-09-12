@@ -41,6 +41,11 @@ def main(argv=None) -> int:
     sp.add_argument("--at", type=float, default=0.5)
     sp.add_argument("--overlap", type=int, default=12)
 
+    cv = sub.add_parser("carve", help="서 있는 전신 한 장을 관절 높이에서 잘라 파츠로")
+    cv.add_argument("body"); cv.add_argument("-o", "--out", required=True)
+    cv.add_argument("--split-legs", action="store_true", help="정면·후면에서 두 다리를 세로로 나눈다")
+    cv.add_argument("--overlap", type=int, default=8)
+
     ph = sub.add_parser("placeholder", help="검증용 임시 파츠를 만든다")
     ph.add_argument("-o", "--out", required=True); ph.add_argument("--side", default="east")
 
@@ -93,6 +98,11 @@ def main(argv=None) -> int:
         from .split import split_to_files
         print(split_to_files(ns.image, ns.out, ns.upper, ns.lower,
                              at=ns.at, overlap=ns.overlap))
+    elif ns.cmd == "carve":
+        from .carve import carve
+        parts = carve(ns.body, ns.out, split_legs=ns.split_legs, overlap=ns.overlap)
+        print(f"파츠 {len(parts)}개 → {Path(ns.out) / 'parts.json'}")
+        print("팔은 가로 자르기로 분리되지 않는다 — 팔 파츠 시트에서 따로 받아 합친다.")
     elif ns.cmd == "placeholder":
         from .placeholder import build
         print(f"→ {build(ns.out, ns.side)}")
