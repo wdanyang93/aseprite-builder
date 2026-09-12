@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .spec import (ANKLE_DX, CENTER_X, ELBOW_DX, HIP_DX, JOINT_T, KNEE_DX,
-                   SHOULDER_DX, SOLE_Y, WRIST_DX, t_to_y)
+from . import spec as _spec
+from .spec import CENTER_X, JOINT_T, SOLE_Y, t_to_y
 
 
 @dataclass
@@ -33,6 +33,8 @@ def build_skeleton(side: str = "front") -> dict[str, Bone]:
     """side='front' 은 좌우 팔다리가 둘 다 보이는 정면 리그.
     side='east' 는 측면(오른쪽 보기) — 뼈 구조는 같고 좌우 오프셋만 줄어든다."""
     k = 0.30 if side != "front" else 1.0   # 측면은 좌우 벌어짐이 원근으로 줄어든다
+    SHOULDER_DX, ELBOW_DX, WRIST_DX = _spec.SHOULDER_DX, _spec.ELBOW_DX, _spec.WRIST_DX
+    HIP_DX, KNEE_DX, ANKLE_DX = _spec.HIP_DX, _spec.KNEE_DX, _spec.ANKLE_DX
     bones: list[Bone] = [
         Bone("root", None, CENTER_X, t_to_y(JOINT_T["hips"])),
         _b("hips", "root", 0, "hips"),

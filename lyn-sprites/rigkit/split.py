@@ -39,3 +39,34 @@ def split_to_files(src: str | Path, out_dir: str | Path, upper: str, lower: str,
     bottom.save(out / f"{lower}.png")
     return {upper: f"{upper}.png", lower: f"{lower}.png",
             "cut_y": round(cut_y, 1), "overlap": overlap}
+
+
+def cut_chain(img: Image.Image, fracs: list[float], overlap: int = 10
+              ) -> list[tuple[Image.Image, tuple[float, float], float]]:
+    """통짜 팔·다리를 관절선 여러 개에서 한 번에 나눈다.
+
+    fracs : 불투명 높이에서 자를 위치들 (예: 팔 [0.48, 0.85] → 위팔/아래팔/손).
+    반환   : 조각마다 (이미지, 앵커, 길이). 앵커는 그 조각이 붙는 관절선 위에 있고,
+             길이는 겹침을 뺀 '관절에서 다음 관절까지'다. 이 길이로 뼈가 만들어지므로
+             조각끼리 틈이나 겹침 없이 이어진다.
+    """
+    import numpy as np
+
+    x0, y0, x1, y1 = opaque_box(img)
+    h = y1 - y0
+    lines = [y0] + [y0 + h * f for f in fracs] + [y1]
+    a = np.array(img.convert("RGBA"))[..., 3] > 32
+
+    def center_x(y: float) -> float:
+        row = int(min(max(y, y0), y1 - 1))
+        xs = np.nonzero(a[row])[0]
+        return float(xs.min() + xs.max()) / 2 if len(xs) else (x0 + x1) / 2
+
+    out = []
+    for i in range(len(lines) - 1):
+        top, bot = lines[i], lines[i + 1]
+        c0 = int(max(0, top - (overlap if i else 0)))
+        c1 = int(min(img.height, bot + (overlap if i + 2 < len(lines) else 0)))
+        piece = img.crop((0, c0, img.width, c1))
+        out.append((piece, (center_x(top), top - c0), bot - top))
+    return out

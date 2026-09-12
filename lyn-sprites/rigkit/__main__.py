@@ -41,6 +41,12 @@ def main(argv=None) -> int:
     sp.add_argument("--at", type=float, default=0.5)
     sp.add_argument("--overlap", type=int, default=12)
 
+    ar = sub.add_parser("autorig", help="파츠에서 뼈대 비율을 만든다 (그림이 기준)")
+    ar.add_argument("parts"); ar.add_argument("--dry-run", action="store_true")
+
+    ms = sub.add_parser("measure", help="전신 원화에서 이 캐릭터의 관절 비율을 잰다")
+    ms.add_argument("body"); ms.add_argument("-o", "--out", help="관절 t 를 JSON 으로 저장")
+
     cv = sub.add_parser("carve", help="서 있는 전신 한 장을 관절 높이에서 잘라 파츠로")
     cv.add_argument("body"); cv.add_argument("-o", "--out", required=True)
     cv.add_argument("--split-legs", action="store_true", help="정면·후면에서 두 다리를 세로로 나눈다")
@@ -49,7 +55,16 @@ def main(argv=None) -> int:
     ph = sub.add_parser("placeholder", help="검증용 임시 파츠를 만든다")
     ph.add_argument("-o", "--out", required=True); ph.add_argument("--side", default="east")
 
+    ap.add_argument("--joints", help="캐릭터 관절 t JSON (rigkit measure 결과)")
+    ap.add_argument("--rig", help="파츠에서 만든 뼈대 프로필 JSON (rigkit autorig 결과)")
     ns = ap.parse_args(argv)
+    if getattr(ns, "joints", None):
+        from .spec import load_joints
+        load_joints(ns.joints)
+    if getattr(ns, "rig", None):
+        import json as _json
+        from .autorig import apply as _apply
+        _apply(_json.loads(Path(ns.rig).read_text()))
 
     if ns.cmd == "cut":
         from .cut import cut
@@ -98,6 +113,24 @@ def main(argv=None) -> int:
         from .split import split_to_files
         print(split_to_files(ns.image, ns.out, ns.upper, ns.lower,
                              at=ns.at, overlap=ns.overlap))
+    elif ns.cmd == "autorig":
+        from .autorig import rig_from_parts
+        r = rig_from_parts(ns.parts, write=not ns.dry_run)
+        print(f'공통 배율 {r["scale"]}  (파츠 사슬 합 {r["measured_px"]["total"]}px → 몸높이에 맞춤)')
+        print("관절 t:", " ".join(f'{k}={v}' for k, v in r["joints"].items()))
+        print("좌우:", r["lateral"])
+    elif ns.cmd == "measure":
+        import json as _json
+        from PIL import Image as _Image
+        from .measure import measure_body
+        m = measure_body(_Image.open(ns.body))
+        print(f'잰 값: 목 t={m["measured"]["neck_t"]}  → {m["measured"]["heads_tall"]}등신')
+        for k, v in m["derived_joints"].items():
+            print(f"  {k:10s} {v:.4f}")
+        if ns.out:
+            Path(ns.out).parent.mkdir(parents=True, exist_ok=True)
+            Path(ns.out).write_text(_json.dumps(m, indent=1, ensure_ascii=False))
+            print(f"→ {ns.out}")
     elif ns.cmd == "carve":
         from .carve import carve
         parts = carve(ns.body, ns.out, split_legs=ns.split_legs, overlap=ns.overlap)

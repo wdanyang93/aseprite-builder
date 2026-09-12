@@ -19,14 +19,16 @@ from PIL import Image
 from .fit import opaque_box
 from .spec import BODY_H, CANVAS, CENTER_X, JOINT_T, SOLE_Y, t_to_y
 
-# (슬롯, 시작 t, 끝 t, 앵커 t) — 앵커는 그 파츠가 붙는 관절
-BANDS = [
-    ("head",      0.000, 0.190, JOINT_T["head"]),
-    ("torso",     0.165, 0.520, JOINT_T["chest"]),
-    ("thigh",     0.500, 0.730, JOINT_T["hips"]),
-    ("shin",      0.710, 0.935, JOINT_T["knee"]),
-    ("foot",      0.920, 1.000, JOINT_T["ankle"]),
-]
+def bands(pad: float = 0.02) -> list[tuple[str, float, float, float]]:
+    """(슬롯, 시작 t, 끝 t, 앵커 t). 관절 표가 캐릭터에 맞게 바뀌면 밴드도 따라간다."""
+    j = JOINT_T
+    return [
+        ("head",  0.0,                    j["head"] + pad,   j["head"]),
+        ("torso", j["head"] - pad,         j["hips"] + pad,   j["chest"]),
+        ("thigh", j["hips"] - pad,         j["knee"] + pad,   j["hips"]),
+        ("shin",  j["knee"] - pad,         j["ankle"] + pad,  j["knee"]),
+        ("foot",  j["ankle"] - pad * 0.5,  1.0,               j["ankle"]),
+    ]
 
 
 def normalize(img: Image.Image, *, body_h: int = BODY_H) -> Image.Image:
@@ -65,7 +67,7 @@ def carve(body: str | Path, out_dir: str | Path, *, split_legs: bool = False,
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     parts: dict[str, dict] = {}
 
-    for name, t0, t1, ta in BANDS:
+    for name, t0, t1, ta in bands():
         y0 = int(round(t_to_y(t0))) - (0 if name == "head" else overlap)
         y1 = int(round(t_to_y(t1))) + overlap
         band = img.crop((0, max(0, y0), img.width, min(img.height, y1)))

@@ -1,0 +1,18 @@
+{
+ "measured": {
+  "neck_t": 0.2273,
+  "heads_tall": 4.4
+ },
+ "derived_joints": {
+  "head_top": 0.0,
+  "head": 0.2273,
+  "chest": 0.2853,
+  "shoulder": 0.2891,
+  "elbow": 0.4244,
+  "wrist": 0.5519,
+  "hips": 0.5673,
+  "knee": 0.7682,
+  "ankle": 0.9575,
+  "sole": 1.0
+ }
+}

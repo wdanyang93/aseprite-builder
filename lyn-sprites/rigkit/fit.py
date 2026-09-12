@@ -27,8 +27,12 @@ def opaque_box(img: Image.Image, thr: int = 32) -> tuple[int, int, int, int]:
     return (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
 
 
-def measured_length(img: Image.Image, anchor: tuple[float, float], slot: str) -> float:
-    """앵커에서 파츠 끝까지의 길이(픽셀). 머리만 위로, 나머지는 아래로 잰다."""
+def measured_length(img: Image.Image, anchor: tuple[float, float], slot: str,
+                    explicit: float | None = None) -> float:
+    """앵커에서 파츠 끝까지의 길이(픽셀). 머리만 위로, 나머지는 아래로 잰다.
+    관절선에서 나눈 조각은 겹침이 섞이므로 explicit(=관절 사이 길이)를 우선한다."""
+    if explicit:
+        return float(explicit)
     x0, y0, x1, y1 = opaque_box(img)
     base = slot.rstrip("_lr").rstrip("_")
     if base in GROWS_UP:
@@ -48,8 +52,8 @@ def fit_parts(parts_dir: str | Path, *, write: bool = True) -> dict[str, dict]:
     for slot, m in meta.items():
         img = Image.open(d / m["file"]).convert("RGBA")
         anchor = tuple(m["anchor"])
-        before = measured_length(img, anchor, slot)
-        s = fit_scale(img, anchor, slot)
+        before = measured_length(img, anchor, slot, m.get("length"))
+        s = target_length(slot) / before
         m["scale"] = round(s, 5)
         report[slot] = {"measured": round(before, 1),
                         "target": round(target_length(slot), 1),

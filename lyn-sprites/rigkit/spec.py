@@ -44,3 +44,20 @@ ANKLE_DX = 36
 
 # 한 보행 주기 = 두 걸음. 위상 phi in [0,1). 프레임 수.
 WALK_FRAMES = 8
+
+
+def apply_joints(d: dict) -> None:
+    """캐릭터에서 측정한 관절 t 로 갈아끼운다 (rigkit.measure 참고).
+    모듈 상수를 제자리에서 바꾸므로, 이후 build_skeleton/target_length 가 새 값을 쓴다."""
+    for k, v in d.items():
+        if k in JOINT_T:
+            JOINT_T[k] = float(v)
+
+
+def load_joints(path) -> dict:
+    import json
+    from pathlib import Path
+    d = json.loads(Path(path).read_text())
+    d = d.get("derived_joints", d)
+    apply_joints(d)
+    return d

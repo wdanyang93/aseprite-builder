@@ -1,0 +1,31 @@
+{
+ "scale": 0.59983,
+ "measured_px": {
+  "head": 264.6,
+  "torso": 358.0,
+  "thigh_r": 146.2,
+  "shin_r": 130.6,
+  "foot_r": 34.2,
+  "total": 933.6
+ },
+ "joints": {
+  "head_top": 0.0,
+  "head": 0.2834,
+  "chest": 0.3122,
+  "shoulder": 0.3218,
+  "hips": 0.6669,
+  "knee": 0.8234,
+  "ankle": 0.9634,
+  "sole": 1.0,
+  "elbow": 0.5084,
+  "wrist": 0.6523
+ },
+ "lateral": {
+  "shoulder": 57.39,
+  "elbow": 64.01,
+  "wrist": 68.43,
+  "hip": 34.78,
+  "knee": 37.45,
+  "ankle": 40.13
+ }
+}
