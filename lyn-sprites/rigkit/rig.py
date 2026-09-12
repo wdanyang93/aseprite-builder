@@ -88,3 +88,35 @@ SLOT_BONE = {name: bone for name, bone, _ in SLOTS}
 
 def slot_order() -> list[str]:
     return [n for n, _, _ in sorted(SLOTS, key=lambda s: s[2])]
+
+
+# 슬롯별 '기준 길이' — 앵커에서 파츠 끝까지가 이만큼이어야 한다 (픽셀).
+# AI 가 어떤 크기로 그려 오든 이 길이에 맞춰 균일 확대·축소한다.
+def _seg(a: str, b: str) -> float:
+    return abs(t_to_y(JOINT_T[b]) - t_to_y(JOINT_T[a]))
+
+
+def target_length(slot: str) -> float:
+    from .spec import BODY_H
+    base = slot.rstrip("_lr").rstrip("_")
+    table = {
+        "upperarm": _seg("shoulder", "elbow"),
+        "forearm": _seg("elbow", "wrist"),
+        "hand": 0.062 * BODY_H,
+        "thigh": _seg("hips", "knee"),
+        "shin": _seg("knee", "ankle"),
+        "foot": _seg("ankle", "sole"),
+        "torso": _seg("chest", "hips"),
+        "hips_wear": 0.105 * BODY_H,
+        "head": _seg("head_top", "head"),     # 목 → 정수리 (위로 자란다)
+        "tail1": 0.13 * BODY_H,
+        "tail2": 0.13 * BODY_H,
+        "tail3": 0.13 * BODY_H,
+        "backpack": 0.20 * BODY_H,
+        "bag": 0.12 * BODY_H,
+    }
+    return table[base if base in table else slot]
+
+
+# 앵커에서 어느 방향으로 길이를 재는가. 머리만 위로 자란다.
+GROWS_UP = {"head"}

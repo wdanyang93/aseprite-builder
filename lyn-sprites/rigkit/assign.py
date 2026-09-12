@@ -18,7 +18,7 @@ import numpy as np
 from PIL import Image
 
 DEFAULT_ANCHOR = {
-    "head": (0.50, 0.78),
+    "head": (0.50, 0.90),      # 목은 머리 그림의 아래쪽
     "torso": (0.50, 0.06),
     "hips_wear": (0.50, 0.10),
     "backpack": (0.50, 0.20),

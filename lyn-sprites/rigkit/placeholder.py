@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from .rig import build_skeleton
+from .rig import build_skeleton, target_length
 from .spec import JOINT_T, t_to_y
 
 C = {
@@ -48,26 +48,28 @@ def build(out_dir: str | Path, side: str = "east") -> Path:
 
     ua, fa = seg("shoulder", "elbow"), seg("elbow", "wrist")
     th, sh = seg("hips", "knee"), seg("knee", "ankle")
-    torso_h = seg("chest", "hips")
 
     specs: dict[str, tuple[Image.Image, tuple[float, float]]] = {}
     for s in ("l", "r"):
         sleeve = C["shirt"]
         specs[f"upperarm_{s}"] = _limb(30, ua, sleeve)
         specs[f"forearm_{s}"] = _limb(24, fa, C["skin"])
-        specs[f"hand_{s}"] = _limb(24, 30, C["leather"])
+        specs[f"hand_{s}"] = _limb(24, int(round(target_length("hand"))), C["leather"])
         specs[f"thigh_{s}"] = _limb(46, th, C["tights"])
         specs[f"shin_{s}"] = _limb(36, sh, C["tights"])
-        foot = Image.new("RGBA", (78, 76), (0, 0, 0, 0))
-        ImageDraw.Draw(foot).rounded_rectangle([6, 6, 62, 68], radius=12, fill=C["boot"],
-                                               outline=(60, 48, 42, 255), width=2)
-        specs[f"foot_{s}"] = (foot, (34.0, 8.0))
+        # 부츠: 앵커(발목)에서 바닥까지가 기준 길이여야 한다
+        fh = int(round(target_length("foot") / 0.88))
+        foot = Image.new("RGBA", (int(fh * 1.6), fh + 10), (0, 0, 0, 0))
+        ImageDraw.Draw(foot).rounded_rectangle([6, 6, int(fh * 1.6) - 14, fh + 4], radius=10,
+                                               fill=C["boot"], outline=(60, 48, 42, 255), width=2)
+        specs[f"foot_{s}"] = (foot, (fh * 0.55, (fh + 10) * 0.12))
 
-    specs["torso"] = _limb(108, torso_h + 26, C["shirt"], pad=10)
-    specs["hips_wear"] = _limb(96, 46, C["cloak"], pad=10)
-    specs["head"] = _blob(132, 136, C["hair"], anchor_t=0.30)
-    for i, (w, h) in enumerate(((54, 74), (48, 74), (40, 70)), start=1):
-        specs[f"tail{i}"] = _limb(w, h, C["fur"])
+    specs["torso"] = _limb(108, int(round(target_length("torso"))), C["shirt"], pad=10)
+    specs["hips_wear"] = _limb(96, int(round(target_length("hips_wear"))), C["cloak"], pad=10)
+    head_h = int(round(target_length("head") / 0.90))      # 앵커(목)가 아래 90% 지점
+    specs["head"] = _blob(int(head_h * 0.95), head_h, C["hair"], anchor_t=0.90)
+    for i, (w, h) in enumerate(((54, 0), (48, 0), (40, 0)), start=1):
+        specs[f"tail{i}"] = _limb(w, int(round(target_length(f"tail{i}"))), C["fur"])
 
     meta = {}
     for name, (img, anchor) in specs.items():

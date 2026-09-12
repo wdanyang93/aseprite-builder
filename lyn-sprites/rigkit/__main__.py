@@ -29,6 +29,18 @@ def main(argv=None) -> int:
     g.add_argument("--fps", type=int, default=12)
     g.add_argument("--tex-root", default="res://assets/parts")
 
+    f = sub.add_parser("fit", help="파츠 크기를 리그 뼈 길이에 맞춘다 (parts.json 의 scale 갱신)")
+    f.add_argument("parts"); f.add_argument("--dry-run", action="store_true")
+
+    ck = sub.add_parser("check", help="시트 안에서 파츠끼리 비율이 맞는지 본다")
+    ck.add_argument("parts")
+
+    sp = sub.add_parser("split", help="통짜 팔다리를 관절에서 두 조각으로 나눈다")
+    sp.add_argument("image"); sp.add_argument("upper"); sp.add_argument("lower")
+    sp.add_argument("-o", "--out", required=True)
+    sp.add_argument("--at", type=float, default=0.5)
+    sp.add_argument("--overlap", type=int, default=12)
+
     ph = sub.add_parser("placeholder", help="검증용 임시 파츠를 만든다")
     ph.add_argument("-o", "--out", required=True); ph.add_argument("--side", default="east")
 
@@ -59,6 +71,28 @@ def main(argv=None) -> int:
         p = export_scene(ns.parts, ns.out, side=ns.side, fps=ns.fps,
                          frames=ns.frames, tex_root=ns.tex_root)
         print(f"→ {p}")
+    elif ns.cmd == "fit":
+        from .fit import fit_parts
+        r = fit_parts(ns.parts, write=not ns.dry_run)
+        for slot, v in sorted(r.items(), key=lambda kv: -abs(kv[1]["scale"] - 1)):
+            print(f'{slot:12s} 잰길이 {v["measured"]:7.1f}  기준 {v["target"]:7.1f}  배율 {v["scale"]:.3f}')
+        print("(dry-run: 파일을 쓰지 않았다)" if ns.dry_run else f'→ {Path(ns.parts) / "parts.json"} 갱신')
+    elif ns.cmd == "check":
+        from .fit import consistency
+        c = consistency(ns.parts)
+        print(f'시트 전체 배율(중앙값) {c["median_scale"]:.3f}')
+        bad = {k: v for k, v in c["deviation_pct"].items() if abs(v) > 8}
+        if bad:
+            print("비율이 어긋난 파츠(중앙값 대비 %):")
+            for k, v in sorted(bad.items(), key=lambda kv: -abs(kv[1])):
+                print(f"  {k:12s} {v:+.1f}%")
+            print("→ 8% 넘게 어긋나면 그 파츠만 AI 에게 다시 요구하는 편이 낫다.")
+        else:
+            print("파츠끼리 비율이 맞는다 (모두 ±8% 이내).")
+    elif ns.cmd == "split":
+        from .split import split_to_files
+        print(split_to_files(ns.image, ns.out, ns.upper, ns.lower,
+                             at=ns.at, overlap=ns.overlap))
     elif ns.cmd == "placeholder":
         from .placeholder import build
         print(f"→ {build(ns.out, ns.side)}")

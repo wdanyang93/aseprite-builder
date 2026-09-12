@@ -17,8 +17,13 @@
 4. **파츠 이름을 자동으로 알아맞히지 않는다.** `cut` 이 번호를 붙이면 사람이 `names.json` 에 슬롯을 적는다.
    색·성분으로 파츠를 추론하려던 시도는 16번 실패했다.
 5. **모르는 화소는 모른다고 남긴다.** 가려진 부분을 추정으로 채우지 않는다. 필요하면 그 각도의 파츠를 새로 요구한다.
-6. **뷰 간 전이 금지.** 정면 파츠로 측면을 만들지 않는다. 각 뷰는 자기 파츠 세트를 가진다.
-7. Godot 쪽 기존 동작(Background, Dig, Room, Light, Walk)은 바꾸지 않는다. 이 리그는 새로 추가되는 씬이다.
+6. **AI 가 그려 준 크기를 믿지 않는다.** 파츠 길이를 재서 리그 뼈 길이에 맞춘다(`fit`).
+   "AI 에게 정확한 크기로 다시 그려 달라"는 해법은 쓰지 않는다 — 그게 비율이 무너지던 원인이다.
+   AI 에게 요구할 것은 한 시트 안에서 파츠끼리 비율이 맞는 것뿐이고, 그건 `check` 로 확인한다.
+7. **포즈 변형 시트를 요구하지 않는다.** 굽힌 팔·든 다리 같은 변형은 뼈대가 만든다.
+   원화는 곧게 편 파츠 한 벌이면 된다.
+8. **뷰 간 전이 금지.** 정면 파츠로 측면을 만들지 않는다. 각 뷰는 자기 파츠 세트를 가진다.
+9. Godot 쪽 기존 동작(Background, Dig, Room, Light, Walk)은 바꾸지 않는다. 이 리그는 새로 추가되는 씬이다.
 
 ## 좌표 규약 (`rigkit/spec.py`)
 - 캔버스 **512×640**, 몸 높이(정수리→발바닥) **H=560**, 중심선 x=256, 발바닥 y=620.
@@ -30,7 +35,10 @@
 ## 파이프라인 (`rigkit/`, 실행 순서)
 ```
 cut      파츠 시트 → 조각 PNG + CONTACT.png (번호)      python -m rigkit cut  SHEET -o build/pieces
+split    통짜 팔다리를 관절에서 두 조각으로            python -m rigkit split LEG thigh_l shin_l -o assets/parts --at 0.5
 assign   names.json 으로 조각 → 슬롯 + 앵커 계산         python -m rigkit assign build/pieces names.json -o assets/parts
+fit      파츠 크기를 뼈 길이에 맞춘다 (scale 계산)       python -m rigkit fit   assets/parts
+check    시트 안 파츠끼리 비율이 맞는지 본다             python -m rigkit check assets/parts
 preview  파이썬으로 걷기 스트립/GIF 굽기 (검증용)        python -m rigkit preview assets/parts -o build/preview
 godot    Godot 4 씬(.tscn) 내보내기                      python -m rigkit godot assets/parts/parts.json -o godot/lyn_rig.tscn
 ```
@@ -43,7 +51,7 @@ godot    Godot 4 씬(.tscn) 내보내기                      python -m rigkit g
 - 큰 이진 파일은 Git LFS (`assets/raw/`, `assets/parts/`). `build/` 는 산출물이라 .gitignore.
 
 ## 현재 상태
-- 뼈대 19개, 슬롯 20개, 걷기 8프레임, 파이썬 미리보기 + Godot .tscn 내보내기 동작. 테스트 14개 통과.
+- 뼈대 19개, 슬롯 20개, 걷기 8프레임, 비율 자동 정렬, 관절 분할, 파이썬 미리보기 + Godot .tscn. 테스트 37개 통과.
 - **아직 실제 원화 파츠가 없다.** `build/placeholder_parts` 는 검증용 임시 도형이다.
   진짜 파츠가 들어오면 `assets/raw/` → `cut` → `assign` → 같은 명령으로 그대로 돌아간다.
 
