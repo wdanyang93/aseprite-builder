@@ -1,0 +1,85 @@
+{
+ "torso": "cS1_34",
+ "pairs": [
+  {
+   "phase": 0,
+   "clothed": "cS1_29m",
+   "nude": "nS2_30",
+   "dist": 0.693,
+   "fw_c": 40.9,
+   "fw_n": 19.0,
+   "clothed_nudepair": "cS1_18m",
+   "fw_target": 40.9
+  },
+  {
+   "phase": 1,
+   "clothed": "cS1_14",
+   "nude": "nS2_19",
+   "dist": 0.48,
+   "fw_c": 26.0,
+   "fw_n": 20.0,
+   "clothed_nudepair": "cS1_04",
+   "fw_target": 28.9
+  },
+  {
+   "phase": 2,
+   "clothed": "cS1_05",
+   "nude": "nS1_20",
+   "dist": 0.227,
+   "fw_c": 1.0,
+   "fw_n": 3.0,
+   "clothed_nudepair": "cS1_32m",
+   "fw_target": 0.0
+  },
+  {
+   "phase": 3,
+   "clothed": "cS1_27",
+   "nude": "nS1_21",
+   "dist": 0.272,
+   "fw_c": -22.0,
+   "fw_n": -6.0,
+   "clothed_nudepair": "cS1_06",
+   "fw_target": -28.9
+  },
+  {
+   "phase": 4,
+   "clothed": "cS1_29",
+   "nude": "nS1_12",
+   "dist": 0.748,
+   "fw_c": -40.9,
+   "fw_n": -10.0,
+   "clothed_nudepair": "cS1_07",
+   "fw_target": -40.9
+  },
+  {
+   "phase": 5,
+   "clothed": "cS1_19",
+   "nude": "nS1_02",
+   "dist": 0.415,
+   "fw_c": -26.0,
+   "fw_n": -9.0,
+   "clothed_nudepair": "cS1_04m",
+   "fw_target": -28.9
+  },
+  {
+   "phase": 6,
+   "clothed": "cS1_32",
+   "nude": "nS1_26",
+   "dist": 0.351,
+   "fw_c": -1.0,
+   "fw_n": 12.0,
+   "clothed_nudepair": "cS1_32",
+   "fw_target": -0.0
+  },
+  {
+   "phase": 7,
+   "clothed": "cS1_11",
+   "nude": "nS1_04",
+   "dist": 0.28,
+   "fw_c": 30.0,
+   "fw_n": 12.0,
+   "clothed_nudepair": "cS1_10",
+   "fw_target": 28.9
+  }
+ ]
+}

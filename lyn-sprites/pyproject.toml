@@ -1,0 +1,20 @@
+[project]
+name = "lyn-sprites"
+version = "0.2.0"
+description = "원화를 파트로 자르고 뼈대에 붙여 걷게 만드는 2D 컷아웃 리깅 (Godot 4)"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "pillow>=10", "scipy>=1.10"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["rigkit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["docs", "build", "godot", "assets"]

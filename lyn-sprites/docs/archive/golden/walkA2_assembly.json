@@ -1,0 +1,58 @@
+[
+ {
+  "phase": 0,
+  "donor": "cE2_08",
+  "dx": 2,
+  "seam_err": 64.4,
+  "pose_dist": 0.086
+ },
+ {
+  "phase": 1,
+  "donor": "cE1_21",
+  "dx": 5,
+  "seam_err": 53.7,
+  "pose_dist": 0.574
+ },
+ {
+  "phase": 2,
+  "donor": "cE1_10",
+  "dx": 2,
+  "seam_err": 22.2,
+  "pose_dist": 0.103
+ },
+ {
+  "phase": 3,
+  "donor": "cE2_34",
+  "dx": 0,
+  "seam_err": 45.3,
+  "pose_dist": 0.423
+ },
+ {
+  "phase": 4,
+  "donor": "cE1_01",
+  "dx": 10,
+  "seam_err": 73.8,
+  "pose_dist": 0.165
+ },
+ {
+  "phase": 5,
+  "donor": "cE1_03",
+  "dx": -1,
+  "seam_err": 26.0,
+  "pose_dist": 0.827
+ },
+ {
+  "phase": 6,
+  "donor": "cE1_04",
+  "dx": 4,
+  "seam_err": 37.7,
+  "pose_dist": 0.445
+ },
+ {
+  "phase": 7,
+  "donor": "cE2_28",
+  "dx": 7,
+  "seam_err": 63.6,
+  "pose_dist": 0.621
+ }
+]

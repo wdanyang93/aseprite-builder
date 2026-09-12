@@ -1,0 +1,89 @@
+{
+  "schema": "platekit.character_motion_research_state.v1",
+  "updated": "2026-09-12",
+  "canonical_handoff": "docs/AI_CHARACTER_MOTION_RESEARCH_HANDOFF_KO.md",
+  "goal": "Infer reusable per-part periodic motion from 36 noisy AI observations, resample it to an 8-frame loop, and render approved canonical freeform parts with phase-dependent shape, projection, shading, occlusion, and z-order.",
+  "final_target": {
+    "directions": 8,
+    "frames_per_direction": 8,
+    "engine": "Godot 4.3+",
+    "appearance_source": "approved canonical part pixels",
+    "motion_source": "robust periodic model inferred from observation frames"
+  },
+  "verified": {
+    "walk_compiler": "5 authored directions x 8 frames -> 8 directions x 8 frames with Godot resources",
+    "full_test_suite": {
+      "collected": 102,
+      "passed": 102,
+      "failed": 0,
+      "note": "Use a fresh writable project-local --basetemp on Windows."
+    },
+    "visible_part_ownership": {
+      "input_frames": 36,
+      "parts_per_frame": 7,
+      "part_pngs": 252,
+      "parts": [
+        "head",
+        "torso",
+        "arm_l",
+        "arm_r",
+        "leg_l",
+        "leg_r",
+        "tail"
+      ],
+      "unowned_pixels": 0,
+      "multiply_owned_visible_pixels": 0,
+      "exact_rgba_round_trip": true,
+      "artifact_root": "../body_parts_v1_36"
+    }
+  },
+  "prototype_only": {
+    "platekit/character/partize.py": "Coarse visible-pixel ownership seed; not semantic rig-ready segmentation and no hidden joint overlap.",
+    "platekit/character/rig.py": "Ratio/silhouette anchor estimates; no full temporal anatomical identity or periodic phase model.",
+    "platekit/character/overlay.py": "Failed/research outfit overlay and rebuild experiments; not a production garment-transfer implementation."
+  },
+  "not_implemented": [
+    "fine freeform anatomical part masks and SDFs",
+    "hidden joint overlap reconstruction",
+    "temporal anatomical left/right identity tracking",
+    "foot-contact and gait-phase inference",
+    "periodic robust fit and 8-phase resampling",
+    "per-part cage/SDF deformation fields",
+    "phase-dependent projected axial/normal scale",
+    "canonical-albedo-separated local shading fields",
+    "phase-dependent z-order and occlusion masks",
+    "canonical part renderer",
+    "general outfit binding",
+    "tail and loose-cloth secondary motion"
+  ],
+  "non_negotiable": [
+    "A part is a freeform alpha mask or SDF, never a rectangular crop.",
+    "Translation and rotation alone are insufficient for body and fitted-cloth motion.",
+    "Each body/fitted part needs phase-dependent silhouette deformation and shading information.",
+    "Projected limb length and width may change with gait phase and foreshortening.",
+    "Anatomical left/right identity must persist through screen-space crossing.",
+    "Canonical albedo/texture must be separated from observed phase-dependent shading.",
+    "Rigid, fitted, and loose parts use different transform models.",
+    "Cross-view transfer is rejected; mirroring is only within one view family.",
+    "Unknown occluded pixels remain unknown until authored or approved.",
+    "Background, Dig, Room, Light, and existing Walk behavior must remain unchanged."
+  ],
+  "next_milestone": {
+    "name": "front-36 temporal freeform observation model",
+    "deliverables": [
+      "hashed 36-frame ingest manifest",
+      "fine part masks/SDFs with confidence and unknown regions",
+      "temporal anatomical limb identity",
+      "joint and foot-contact trajectories",
+      "per-part translation, rotation, projected scale, cage/SDF delta, shading, z-order, and occlusion observations",
+      "human override schema",
+      "skeleton, freeform-morph, and shading contact sheets",
+      "synthetic, real-asset, and integration tests"
+    ],
+    "explicitly_deferred": [
+      "final outfit rendering",
+      "8-direction expansion",
+      "loose cloth simulation"
+    ]
+  }
+}
