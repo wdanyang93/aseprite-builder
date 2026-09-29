@@ -70,7 +70,10 @@ def cmd_fit(a):
     relit = relight(n, prof, a.view)
     m = report.metrics(relit, pairs)
     print("shape agreement {shape_agreement:.3f} (neutral {shape_agreement_neutral:.3f})  "
-          "colour error {color_error_lowfreq:.2f}  mean L* {mean_L:.1f} (reference {mean_L_reference:.1f})".format(**m))
+          "drawn form kept {drawn_form_kept:.3f}  colour error {color_error_lowfreq:.2f}  "
+          "mean L* {mean_L:.1f} (reference {mean_L_reference:.1f})".format(**m))
+    if m["drawn_form_kept"] < 0.95:
+        print("WARNING: the relit chest shading departs from the drawing (drawn form kept < 0.95) - check the sheet.")
     if a.sheet:
         report.sheet(relit, pairs, a.sheet)
         print("sheet ->", a.sheet)

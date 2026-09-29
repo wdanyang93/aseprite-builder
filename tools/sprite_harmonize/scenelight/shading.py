@@ -3,8 +3,9 @@
 Per frame (no reference needed):
   1. Height field = sqrt of the Poisson inflation of the WHOLE-BODY silhouette (never per part, so garment and
      part boundaries can't create dents or dark seams).
-  2. Breast ellipsoids are detected automatically from the bright, low-chroma cloth blobs in the upper-torso
-     band (front / 3-4 views: two, side view: one, back view: none) and added as smooth bumps.
+  2. (optional, off by default: geo["bh"] > 0) breast ellipsoids detected from the bright, low-chroma cloth
+     blobs in the upper-torso band. Off because they changed the drawn chest shape; the drawing's own painted
+     shading is kept instead and the scene light is added on top.
   3. Normals from the height field -> shading S = key light (wrapped Lambert) + back/rim light + linear terms
      + a small share of the drawing's own painted shading. S is a smooth L* offset added on top of the colour base.
   4. Thin fur / hair edges get an orange translucent glow (back light through fur).
@@ -20,9 +21,14 @@ import scipy.sparse.linalg as spl
 from .color import apply_color, from_lab, lowpass, materials, to_lab
 
 LOW_H = 320  # figure height (px) of the low-res geometry grid
-GEO_DEFAULT = {"zscale": 1.0, "bh": 0.6, "up": 0.7, "kx": 1.5, "ky": 1.8, "bp": 3.0}
+# bh = breast-ellipsoid height. Default 0 (off): ellipsoids estimated from the top garment never sit exactly on
+# the drawn breasts, and the light they add (a bright spot above / a dark patch on a breast) reads as a CHANGED
+# chest shape. With bh = 0 the drawn chest form is kept (chest-centre form correlation 0.986 vs 0.866) and the
+# reference match drops only a little (chest skin 0.93 -> 0.90 on the Lyn pair).
+GEO_DEFAULT = {"zscale": 1.0, "bh": 0.0, "up": 0.7, "kx": 1.5, "ky": 1.8, "bp": 3.0, "union": "smooth"}
+# keep_drawn: the fit may add to, but never subtract, the drawing's own painted shading.
 CFG_DEFAULT = {"p2": 2.0, "lin": True, "bumplin": True, "deshade": True, "ds_split": True,
-               "glow": True, "pg": 3.0, "chest_w": 3.0, "mean_w": 0.5}
+               "glow": True, "pg": 3.0, "chest_w": 3.0, "mean_w": 0.5, "keep_drawn": True}
 VIEWS = ("front", "front_left", "front_right", "left", "right", "back", "back_left", "back_right", "walk34")
 
 
@@ -121,12 +127,25 @@ def geometry(rgba, view=None, geo=None):
     breasts = detect_breasts(rgb_l, m, (y0 * s, y1 * s), view, geo)
     bump = np.zeros_like(h)
     yy, xx = np.mgrid[0:Hl, 0:Wl].astype(np.float32)
+    domes = []
     for (cx, cy, rx, ry) in breasts:
         r2 = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2
-        bump = np.maximum(bump, geo["bh"] * 0.5 * (rx + ry) * np.clip(1 - r2, 0, 1) ** geo.get("bp", 1.5))
+        domes.append(geo["bh"] * 0.5 * (rx + ry) * np.clip(1 - r2, 0, 1) ** geo.get("bp", 1.5))
+    if len(domes) == 1:
+        bump = domes[0]
+    elif len(domes) == 2:
+        if geo.get("union", "max") == "smooth":
+            # soft maximum: no sharp V-crease where the two domes meet (it read as a changed cleavage)
+            k = max(1e-3, geo.get("union_k", 0.25) * float(max(d.max() for d in domes)))
+            hi = np.maximum(domes[0], domes[1])
+            bump = hi + k * np.log(np.exp((domes[0] - hi) / k) + np.exp((domes[1] - hi) / k)) - k * np.log(2.0) * (
+                np.minimum(domes[0], domes[1]) > 0)
+            bump = np.maximum(bump, 0)
+        else:
+            bump = np.maximum(domes[0], domes[1])
 
     def normals(hh):
-        hh = cv2.GaussianBlur(hh.astype(np.float32), (0, 0), 1.0)
+        hh = cv2.GaussianBlur(hh.astype(np.float32), (0, 0), geo.get("hsig", 1.0))
         gy, gx = np.gradient(hh)
         nz = 1.0 / np.sqrt(1 + gx ** 2 + gy ** 2)
         return -gx * nz, -gy * nz, nz  # image y down: ny > 0 faces down
@@ -225,7 +244,13 @@ def fit_light(neutral, pairs, color_prof, view="walk34", geo=None, cfg=None):
     g = geometry(neutral, view, geo)
     maps = {k: pairs.warp(upsample(g[k], g)) for k in ("nx", "ny", "nz", "nx0", "ny0", "nz0")}
     maps["Ns"] = [pairs.warp(x) for x in own_shading(neutral, base, materials(neutral), g["Hf"], cfg)]
-    bump_w = pairs.warp(upsample((g["bump"] > 1e-3).astype(np.float32), g)) > 0.5
+    if g["breasts"]:
+        bump_w = pairs.warp(upsample((g["bump"] > 1e-3).astype(np.float32), g)) > 0.5
+    else:  # no ellipsoids: emphasise the upper-torso band instead (where the chest is)
+        yy = np.arange(pairs.shape[0])[:, None]
+        ys_ = np.nonzero(pairs.ref[..., 3].max(1) > 0.5)[0]
+        t = (yy - ys_.min()) / max(ys_.max() - ys_.min(), 1)
+        bump_w = np.broadcast_to((t > 0.17) & (t < 0.36), pairs.shape)
     Lc = to_lab(base_w[..., :3])[..., 0]
     Lr = to_lab(pairs.ref[..., :3])[..., 0]
     sig = max(2.0, 0.006 * pairs.Hf)
@@ -260,12 +285,18 @@ def fit_light(neutral, pairs, color_prof, view="walk34", geo=None, cfg=None):
     nb = 17
     lo = [0, -1, -1, -1, 0, 0, -1, -1, -1] + [-np.inf] * (nb - 9)
     hi = [80, 1, 1, 1, 1.0, 80, 1, 1, 1] + [np.inf] * (nb - 9)
+    if cfg.get("keep_drawn"):
+        # never subtract the artist's own painted shading (cleavage, under-breast shadow): it defines the drawn form
+        lo[15] = lo[16] = 0.0
     best = None
     for x0 in ([20, 0.6, -0.6, 0.5, 0.3, 10, -0.7, 0.3, -0.6, -5],   # front-right key, left-back rim
                [20, 0.6, -0.6, -0.5, 0.2, 10, -0.7, 0.5, -0.5, 0],
                [15, 0.8, -0.3, 0.2, 0.5, 10, -0.5, -0.5, -0.7, -8],
                [25, 0.5, -0.5, -0.7, 0.1, 5, 0.3, 0.7, -0.6, -4]):
-        r = least_squares(res, list(x0) + [0.0] * (nb - 10), bounds=(lo, hi), loss="soft_l1", f_scale=3.0 * wt.mean())
+        x0 = list(x0) + [0.0] * (nb - 10)
+        if cfg.get("keep_drawn"):
+            x0[15] = x0[16] = 0.01
+        r = least_squares(res, x0, bounds=(lo, hi), loss="soft_l1", f_scale=3.0 * wt.mean())
         if best is None or r.cost < best.cost:
             best = r
     prof["light"] = [float(v) for v in best.x]

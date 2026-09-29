@@ -41,6 +41,15 @@ def figure(h=360, w=260):
     # mild painted shading: darker toward the silhouette
     d = cv2.distanceTransform((a > 0.5).astype(np.uint8), cv2.DIST_L2, 5)
     rgb *= (0.85 + 0.15 * np.clip(d / 20, 0, 1))[..., None]
+    # drawn chest form (what the artist painted): cleavage shadow, shadows under the cups, highlights on the cups
+    form = np.zeros((h, w), np.float32)
+    cv2.ellipse(form, (cx, 100), (4, 14), 0, 0, 360, -0.25, -1)
+    cv2.ellipse(form, (cx - 18, 130), (16, 5), 0, 0, 360, -0.22, -1)
+    cv2.ellipse(form, (cx + 18, 130), (16, 5), 0, 0, 360, -0.22, -1)
+    cv2.circle(form, (cx - 22, 106), 6, 0.12, -1)
+    cv2.circle(form, (cx + 14, 106), 6, 0.12, -1)
+    form = cv2.GaussianBlur(form, (0, 0), 2.5)
+    rgb *= (1 + form)[..., None]
     a = cv2.GaussianBlur(a, (0, 0), 0.7)
     return np.dstack([rgb, a]).astype(np.float32)
 
@@ -106,11 +115,22 @@ def test_learns_warm_light_from_the_right(fitted):
     assert lab_o[..., 2][body].mean() > lab_n[..., 2][body].mean() + 5  # warmer (more yellow/orange)
 
 
-def test_back_view_has_no_breast_bumps(fitted):
+def test_breast_detection_is_view_aware(fitted):
     from scenelight.shading import geometry
     n, _, prof, _ = fitted
-    assert geometry(n, "back", prof["geo"])["breasts"] == []
-    assert len(geometry(n, "front", prof["geo"])["breasts"]) == 2
+    geo = dict(prof["geo"], bh=0.6)  # ellipsoids are optional (off by default)
+    assert geometry(n, "back", geo)["breasts"] == []
+    assert len(geometry(n, "front", geo)["breasts"]) == 2
+    assert len(geometry(n, "left", geo)["breasts"]) == 1
+
+
+def test_default_keeps_drawn_form(fitted):
+    """Relighting must not change the drawn shape: never subtract painted shading, no ellipsoid bumps."""
+    from scenelight.report import drawn_form_kept
+    n, _, prof, _ = fitted
+    assert prof["geo"]["bh"] == 0.0
+    assert prof["light"][15] >= 0 and prof["light"][16] >= 0
+    assert drawn_form_kept(n, relight(n, prof, "front")) > 0.95
 
 
 def test_works_at_other_scales(fitted):
