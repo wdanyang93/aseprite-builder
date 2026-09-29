@@ -129,8 +129,22 @@ def test_default_keeps_drawn_form(fitted):
     from scenelight.report import drawn_form_kept
     n, _, prof, _ = fitted
     assert prof["geo"]["bh"] == 0.0
-    assert prof["light"][15] >= 0 and prof["light"][16] >= 0
+    i0 = 7 if prof["cfg"].get("model") == "wash" else 15
+    assert prof["light"][i0] >= 0 and prof["light"][i0 + 1] >= 0
     assert drawn_form_kept(n, relight(n, prof, "front")) > 0.95
+
+
+def test_no_shapes_added_inside_the_body(fitted):
+    """Away from the silhouette the added light must be a plain slope (no bumps, bands or terminator lines).
+    The old Lambert-on-inflated-silhouette model scored 0.9 L* here and read as a bulge on the chest."""
+    n, _, prof, _ = fitted
+    from scenelight.color import apply_color
+    S = to_lab(relight(n, prof, "front")[..., :3])[..., 0] - to_lab(apply_color(n, prof["color"])[..., :3])[..., 0]
+    a = (n[..., 3] > 0.5).astype(np.uint8)
+    ys, xs = np.nonzero(cv2.distanceTransform(a, cv2.DIST_L2, 5) > 14)
+    A = np.column_stack([xs, ys, np.ones(len(xs))])
+    c, *_ = np.linalg.lstsq(A, S[ys, xs], rcond=None)
+    assert (S[ys, xs] - A @ c).std() < 0.3
 
 
 def test_works_at_other_scales(fitted):

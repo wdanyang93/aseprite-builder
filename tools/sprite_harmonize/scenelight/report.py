@@ -69,6 +69,21 @@ def drawn_form_kept(neutral, relit):
     return float(np.average(cs, weights=ws)) if cs else float("nan")
 
 
+def added_light_edges(neutral, relit, base):
+    """Sharpest bend of the ADDED light inside the body (L* per (1% of figure height)^2, 99th percentile).
+    A hard terminator or crease shows up as a large value; a smooth scene light stays small."""
+    a = neutral[..., 3] > 0.5
+    ys = np.nonzero(a.any(1))[0]
+    Hf = ys.max() - ys.min()
+    dist = cv2.distanceTransform(a.astype(np.uint8), cv2.DIST_L2, 5)
+    core = a & (dist > 0.03 * Hf)
+    S = to_lab(relit[..., :3])[..., 0] - to_lab(base[..., :3])[..., 0]
+    S = lowpass(S, a, 0.004 * Hf)
+    lap = cv2.Laplacian(S.astype(np.float32), cv2.CV_32F, ksize=5) / 8.0  # ~ second derivative per px^2
+    u = (0.01 * Hf) ** 2
+    return float(np.percentile(np.abs(lap[core]) * u, 99))
+
+
 def _font(size):
     for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf",
               "C:/Windows/Fonts/arial.ttf"]:

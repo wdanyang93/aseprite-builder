@@ -1,6 +1,13 @@
-"""Form-following scene light for 2D character frames ("primitives" model).
+"""Scene light for 2D character frames.
 
-Per frame (no reference needed):
+Default model ("wash", per frame, no reference needed):
+  - colour base per material (colour.py)
+  - a gentle linear brightness slope across the figure (direction and strength fitted)
+  - thin rim lights on the silhouette edge from a key side and a back side (notch-aware edge band)
+  - the drawing's own painted shading is kept as is (never subtracted) -> the drawn form never changes
+  - orange translucent glow on thin fur / hair edges
+
+Legacy model ("normals", cfg["model"] = "normals"), kept for comparison:
   1. Height field = sqrt of the Poisson inflation of the WHOLE-BODY silhouette (never per part, so garment and
      part boundaries can't create dents or dark seams).
   2. (optional, off by default: geo["bh"] > 0) breast ellipsoids detected from the bright, low-chroma cloth
@@ -27,7 +34,10 @@ LOW_H = 320  # figure height (px) of the low-res geometry grid
 # reference match drops only a little (chest skin 0.93 -> 0.90 on the Lyn pair).
 GEO_DEFAULT = {"zscale": 1.0, "bh": 0.0, "up": 0.7, "kx": 1.5, "ky": 1.8, "bp": 3.0, "union": "smooth"}
 # keep_drawn: the fit may add to, but never subtract, the drawing's own painted shading.
-CFG_DEFAULT = {"p2": 2.0, "lin": True, "bumplin": True, "deshade": True, "ds_split": True,
+# model "wash": linear brightness slope across the figure + thin rim lights on the silhouette edge; the interior
+# form is the drawing's own shading. The older "normals" model (Lambert on an inflated silhouette) put a
+# light/dark line through the chest where the torso+arm silhouette turns, which read as a bulge.
+CFG_DEFAULT = {"model": "wash", "p2": 2.0, "lin": True, "bumplin": True, "deshade": True, "ds_split": True,
                "glow": True, "pg": 3.0, "chest_w": 3.0, "mean_w": 0.5, "keep_drawn": True}
 VIEWS = ("front", "front_left", "front_right", "left", "right", "back", "back_left", "back_right", "walk34")
 
@@ -153,7 +163,21 @@ def geometry(rgba, view=None, geo=None):
     nx0, ny0, nz0 = normals(h)
     h = h + bump * m
     nx, ny, nz = normals(h)
+    # wash + rim features: position inside the figure's own box, and an edge band with the outward
+    # silhouette direction. Nothing here can put a shape INSIDE the body.
+    # edge band from a blurred silhouette: 1 on a straight edge, fading inward over ~2*rim_w, and automatically
+    # weaker in concave notches (neck/shoulder, armpit) where the blur stays high - a distance-based band leaked
+    # from the neck notch into the upper chest and looked like a bulge
+    bl = cv2.GaussianBlur(m.astype(np.float32), (0, 0), max(1.0, geo.get("rim_w", 0.012) * LOW_H))
+    edge = np.clip((1 - bl) / 0.5, 0, 1) ** 1.5 * m
+    ab = cv2.GaussianBlur(m.astype(np.float32), (0, 0), max(1.0, 0.012 * LOW_H))
+    gyy, gxx = np.gradient(ab)
+    gn = np.hypot(gxx, gyy) + 1e-6
+    ys_, xs_ = np.nonzero(m)
+    u = (xx - (xs_.min() + xs_.max()) / 2) / LOW_H
+    v = (yy - (ys_.min() + ys_.max()) / 2) / LOW_H
     return {"nx": nx, "ny": ny, "nz": nz, "nx0": nx0, "ny0": ny0, "nz0": nz0, "h": h, "m": m,
+            "u": u, "v": v, "edge": edge, "nxs": -gxx / gn, "nys": -gyy / gn,
             "breasts": breasts, "bump": bump, "s": s, "Hf": Hf, "shape": (H, W)}
 
 
@@ -219,8 +243,15 @@ def light_model(th, N, N0, cfg, Ns=None):
     k1, a1, b1, c1, w1, k2, a2, b2, c2, cz = th[:10]
     l1, l2 = _unit([a1, b1, c1]), _unit([a2, b2, c2])
     w1 = abs(w1)
-    S = k1 * np.maximum((nx * l1[0] + ny * l1[1] + nz * l1[2] + w1) / (1 + w1), 0)
-    S = S + k2 * np.maximum(nx * l2[0] + ny * l2[1] + nz * l2[2], 0) ** cfg.get("p2", 2.0)
+    tau = cfg.get("soft", 0.0)
+    if tau > 0:
+        # smooth clamp: a hard max(.,0) leaves a sharp light/dark line (terminator) across the body that
+        # reads as a bump or dent in the drawing
+        clamp = lambda x: tau * np.logaddexp(0.0, x / tau)
+    else:
+        clamp = lambda x: np.maximum(x, 0)
+    S = k1 * clamp((nx * l1[0] + ny * l1[1] + nz * l1[2] + w1) / (1 + w1))
+    S = S + k2 * clamp(nx * l2[0] + ny * l2[1] + nz * l2[2]) ** cfg.get("p2", 2.0)
     S = S + cz * N0[2]
     if cfg.get("lin"):
         S = S + th[10] * nx + th[11] * ny
@@ -229,6 +260,28 @@ def light_model(th, N, N0, cfg, Ns=None):
     if cfg.get("deshade") and Ns is not None:
         for i, x in enumerate(Ns):
             S = S + th[15 + i] * x
+    return S
+
+
+def _softclamp(x, tau=0.15):
+    return tau * np.logaddexp(0.0, x / tau)
+
+
+WASH_KEYS = ("u", "v", "edge", "nxs", "nys")
+
+
+def wash_model(th, F, cfg, Ns=None):
+    """th = [gx, gy, c, k1, a1, k2, a2, ds_white, ds_chroma]
+    wash: a gentle linear brightness slope across the figure (gx, gy in L* per figure height)
+    rims: k * edge-band * softclamp(silhouette-normal . light-direction)^2 for a key-side and a back-side light.
+    The interior form comes only from the drawing's own painted shading (never subtracted)."""
+    gx, gy, c, k1, a1, k2, a2 = th[:7]
+    S = gx * F["u"] + gy * F["v"] + c
+    for k, a in ((k1, a1), (k2, a2)):
+        S = S + k * F["edge"] * _softclamp(np.cos(a) * F["nxs"] + np.sin(a) * F["nys"]) ** 2
+    if cfg.get("deshade") and Ns is not None:
+        for i, x in enumerate(Ns):
+            S = S + th[7 + i] * x
     return S
 
 
@@ -242,7 +295,9 @@ def fit_light(neutral, pairs, color_prof, view="walk34", geo=None, cfg=None):
     base = apply_color(neutral, color_prof)
     base_w = pairs.warp(base)
     g = geometry(neutral, view, geo)
-    maps = {k: pairs.warp(upsample(g[k], g)) for k in ("nx", "ny", "nz", "nx0", "ny0", "nz0")}
+    wash = cfg.get("model") == "wash"
+    keys = WASH_KEYS if wash else ("nx", "ny", "nz", "nx0", "ny0", "nz0")
+    maps = {k: pairs.warp(upsample(g[k], g)) for k in keys}
     maps["Ns"] = [pairs.warp(x) for x in own_shading(neutral, base, materials(neutral), g["Hf"], cfg)]
     if g["breasts"]:
         bump_w = pairs.warp(upsample((g["bump"] > 1e-3).astype(np.float32), g)) > 0.5
@@ -266,9 +321,14 @@ def fit_light(neutral, pairs, color_prof, view="walk34", geo=None, cfg=None):
         ysl.append(ys); xsl.append(xs)
     ids, tg, wt = np.concatenate(ids), np.concatenate(tg), np.concatenate(wt)
     ys, xs = np.concatenate(ysl), np.concatenate(xsl)
-    N = tuple(maps[k][ys, xs] for k in ("nx", "ny", "nz"))
-    N0 = tuple(maps[k][ys, xs] for k in ("nx0", "ny0", "nz0"))
     Ns = [x[ys, xs] for x in maps["Ns"]]
+    if wash:
+        F = {k: maps[k][ys, xs] for k in WASH_KEYS}
+        model = lambda th: wash_model(th, F, cfg, Ns)
+    else:
+        N = tuple(maps[k][ys, xs] for k in ("nx", "ny", "nz"))
+        N0 = tuple(maps[k][ys, xs] for k in ("nx0", "ny0", "nz0"))
+        model = lambda th: light_model(th, N, N0, cfg, Ns)
     cnt = np.bincount(ids)
     demean = lambda v: v - (np.bincount(ids, v) / cnt)[ids]
     tgd = demean(tg)
@@ -276,32 +336,48 @@ def fit_light(neutral, pairs, color_prof, view="walk34", geo=None, cfg=None):
     tgm = np.bincount(ids, tg) / cnt
 
     def res(th):
-        Sm = light_model(th, N, N0, cfg, Ns)
+        Sm = model(th)
         r1 = (demean(Sm) - tgd) * wt
         e = np.bincount(ids, Sm) / cnt - tgm
         e = e - (e * rw).sum() / rw.sum()
         return np.concatenate([r1, cfg["mean_w"] * e * rw])
 
+    if wash:
+        best = None
+        # right key rim + left back rim, and the mirrored start
+        for x0 in ([6, -3, 0, 20, 0.0, 20, np.pi, 0.01, 0.01], [-6, -3, 0, 20, np.pi, 20, 0.0, 0.01, 0.01]):
+            r = least_squares(res, x0, bounds=([-60, -60, -60, 0, -10, 0, -10, 0, 0], [60, 60, 60, 80, 10, 80, 10, 3, 3]),
+                              loss="soft_l1", f_scale=3.0 * wt.mean())
+            if best is None or r.cost < best.cost:
+                best = r
+        prof["light"] = [float(v) for v in best.x]
+        return _finish_fit(prof, neutral, pairs, g, cfg, view, Lr)
     nb = 17
     lo = [0, -1, -1, -1, 0, 0, -1, -1, -1] + [-np.inf] * (nb - 9)
     hi = [80, 1, 1, 1, 1.0, 80, 1, 1, 1] + [np.inf] * (nb - 9)
     if cfg.get("keep_drawn"):
         # never subtract the artist's own painted shading (cleavage, under-breast shadow): it defines the drawn form
         lo[15] = lo[16] = 0.0
+    lo[4] = cfg.get("min_wrap", 0.0)  # wrapped key light: fades gradually instead of cutting off
     best = None
     for x0 in ([20, 0.6, -0.6, 0.5, 0.3, 10, -0.7, 0.3, -0.6, -5],   # front-right key, left-back rim
                [20, 0.6, -0.6, -0.5, 0.2, 10, -0.7, 0.5, -0.5, 0],
                [15, 0.8, -0.3, 0.2, 0.5, 10, -0.5, -0.5, -0.7, -8],
                [25, 0.5, -0.5, -0.7, 0.1, 5, 0.3, 0.7, -0.6, -4]):
         x0 = list(x0) + [0.0] * (nb - 10)
+        x0[4] = max(x0[4], lo[4] + 0.05) if lo[4] < 1 else 1.0
         if cfg.get("keep_drawn"):
             x0[15] = x0[16] = 0.01
         r = least_squares(res, x0, bounds=(lo, hi), loss="soft_l1", f_scale=3.0 * wt.mean())
         if best is None or r.cost < best.cost:
             best = r
     prof["light"] = [float(v) for v in best.x]
-    prof["glow"], prof["dL"] = [0.0, 0.0, 0.0], 0.0
+    return _finish_fit(prof, neutral, pairs, g, cfg, view, Lr)
 
+
+def _finish_fit(prof, neutral, pairs, g, cfg, view, Lr):
+    """Fur/hair edge glow and the global brightness offset (shared by both light models)."""
+    prof["glow"], prof["dL"] = [0.0, 0.0, 0.0], 0.0
     if cfg.get("glow"):
         ow = pairs.warp(relight(neutral, prof, view))
         lo_, lr_ = to_lab(ow[..., :3]), to_lab(pairs.ref[..., :3])
@@ -337,11 +413,16 @@ def relight(frame, prof, view=None):
     base = apply_color(frame, prof["color"], mats)
     cfg, th = prof["cfg"], prof["light"]
     g = geometry(frame, view, prof["geo"])
-    S = light_model(np.array(th), (g["nx"], g["ny"], g["nz"]), (g["nx0"], g["ny0"], g["nz0"]), cfg)
+    wash = cfg.get("model") == "wash"
+    if wash:
+        S = wash_model(np.array(th), g, cfg)
+    else:
+        S = light_model(np.array(th), (g["nx"], g["ny"], g["nz"]), (g["nx0"], g["ny0"], g["nz0"]), cfg)
     S = upsample(S - S[g["m"]].mean() + prof.get("dL", 0.0), g)
     if cfg.get("deshade"):
+        i0 = 7 if wash else 15
         for i, x in enumerate(own_shading(frame, base, mats, g["Hf"], cfg)):
-            S = S + th[15 + i] * x
+            S = S + th[i0 + i] * x
     lab = to_lab(base[..., :3])
     lab[..., 0] = lab[..., 0] + S
     gl = prof.get("glow", [0, 0, 0])
