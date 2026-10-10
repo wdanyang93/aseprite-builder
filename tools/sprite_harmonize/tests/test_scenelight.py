@@ -168,3 +168,69 @@ def test_composite_places_sprite(fitted):
 ])
 def test_view_from_file_name(name, view):
     assert cli.view_from_name(name) == view
+
+
+# ------------------------------------------------------------------ reference transfer (--pack)
+@pytest.fixture(scope="module")
+def packed(fitted, tmp_path_factory):
+    from scenelight import transfer
+    n, r, prof, _ = fitted
+    d = tmp_path_factory.mktemp("pack") / "scene.pack"
+    transfer.save_pack(str(d), transfer.build_pack(n, r, prof))
+    return n, r, prof, transfer.load_pack(str(d))
+
+
+def test_transfer_moves_toward_reference(packed):
+    from scenelight import transfer
+    n, r, prof, pack = packed
+    o, info = transfer.relight_transfer(n, prof, pack, "front")
+    assert np.array_equal(o[..., 3], n[..., 3]) and np.isfinite(o).all()
+    assert info["coverage"] > 0.3
+    body = n[..., 3] > 0.9
+    lo, lr, lw = to_lab(o[..., :3]), to_lab(r[..., :3]), to_lab(relight(n, prof, "front")[..., :3])
+    err_t = np.abs(lo[..., 0] - lr[..., 0])[body].mean()
+    err_w = np.abs(lw[..., 0] - lr[..., 0])[body].mean()
+    assert err_t < err_w, (err_t, err_w)  # closer to the reference than wash+rim alone
+
+
+def test_transfer_falls_back_on_a_different_drawing(packed):
+    """A frame that does not line up with the neutral must get NO reference patches (pure wash+rim)."""
+    from scenelight import transfer
+    n, _, prof, pack = packed
+    other = figure(h=360, w=260)
+    a = np.zeros(other.shape[:2], np.float32)
+    cv2.ellipse(a, (130, 180), (40, 150), 0, 0, 360, 1, -1)  # a different silhouette
+    other[..., 3] = a
+    o, info = transfer.relight_transfer(other, prof, pack, "front")
+    assert info["coverage"] == 0.0
+    assert np.allclose(o, relight(other, prof, "front"))
+
+
+def test_transfer_follows_a_shifted_frame(packed):
+    """Same drawing placed elsewhere on a bigger canvas: the reference shading must follow it."""
+    from scenelight import transfer
+    n, _, prof, pack = packed
+    big = np.zeros((n.shape[0] + 60, n.shape[1] + 80, 4), np.float32)
+    big[40:40 + n.shape[0], 50:50 + n.shape[1]] = n
+    o_big, info = transfer.relight_transfer(big, prof, pack, "front")
+    o, _ = transfer.relight_transfer(n, prof, pack, "front")
+    assert info["coverage"] > 0.3
+    crop = o_big[40:40 + n.shape[0], 50:50 + n.shape[1]]
+    body = n[..., 3] > 0.9
+    assert np.abs(to_lab(crop[..., :3])[..., 0] - to_lab(o[..., :3])[..., 0])[body].mean() < 1.5
+
+
+def test_transfer_gates_do_not_depend_on_frame_resolution(packed):
+    """The same drawing at 2x must still pass (gates are measured at the neutral's figure scale)."""
+    from scenelight import transfer
+    n, _, prof, pack = packed
+    big = np.clip(cv2.resize(n, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC), 0, 1)
+    o, info = transfer.relight_transfer(big, prof, pack, "front")
+    assert info["passed"] and info["coverage"] > 0.3
+    assert o.shape == big.shape and np.array_equal(o[..., 3], big[..., 3])
+
+
+def test_pack_errors_are_clear(tmp_path):
+    from scenelight import transfer
+    with pytest.raises(FileNotFoundError):
+        transfer.load_pack(str(tmp_path))

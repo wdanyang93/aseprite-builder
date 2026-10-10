@@ -25,20 +25,31 @@ pip install -r requirements.txt        # numpy, opencv-python-headless, pillow, 
 - `neutral.png`: 지금 게임에 쓰는 중립 조명 프레임 (투명 배경 PNG/WebP)
 - `reference.png`: 그 프레임을 그 장면 빛으로 손으로(또는 AI로) 칠한 그림 (투명 배경)
 ```bash
-python relight.py fit neutral.png reference.png -o scenes/<장면이름>.json --sheet check_<장면이름>.png
+python relight.py fit neutral.png reference.png -o scenes/<장면이름>.json --pack scenes/<장면이름>.pack --sheet check_<장면이름>.png
 ```
+- `--pack` = **참고 팩**: 참고 그림의 명암·색을 그대로 옮기기 위한 데이터(중립 그림 + 명암 차이 지도). 사용자가 원하는 "참고처럼"은 이것으로 한다.
+  팩에는 사용자의 그림이 들어 있다 → 공개 저장소에 올리지 않는다 (`.gitignore` 처리됨).
 - 1~2분 걸린다. 출력의 `alignment IoU` 가 0.85 미만이면 두 그림의 포즈/구도가 달라서 결과를 믿기 어렵다 → 사용자에게 알린다.
 - `shape agreement`(명암 모양 일치도, 1이 완전 일치)가 neutral 값보다 올라가야 하고, `mean L*` 가 reference 와 ±2 안이어야 한다.
 - `drawn form kept`(원화 모양 보존)는 0.95 이상이어야 한다. 낮으면 그림의 가슴 모양이 달라 보인다 → 사용자에게 알리고 시트를 보여 준다.
 - `check_*.png` 를 사용자에게 보여 준다 (중립 | 새 식 | 참고, 윗몸 확대, 부위 안 명암 지도: 빨강 = 밝음, 파랑 = 어두움).
+  `--pack` 이면 `check_*_pack.png` 도 나온다. 팩 결과: 린 숲 석양 `shape agreement 0.898  drawn form kept 0.953`.
+  팩 결과의 `drawn form kept` 가 0.95 미만이면 경고가 나온다 → 사용자에게 알린다.
 
 이미 있는 장면: `scenes/forest_sunset.json` (숲 석양, 린. 참고 = 사용자가 만든 따뜻한 참고 그림).
+참고 팩 `scenes/forest_sunset.pack/` 은 사용자에게 따로 받은 zip 에만 들어 있다 (공개 저장소에는 없다).
 
 ### 2) 모든 프레임에 적용 (apply)
 ```bash
-python relight.py apply scenes/forest_sunset.json frames/*.png -o out/forest_sunset/ --view-from-name --sheet before_after.png
+python relight.py apply scenes/forest_sunset.json frames/*.png -o out/forest_sunset/ --pack scenes/forest_sunset.pack --view-from-name --sheet before_after.png
 ```
-- 프레임당 1~3초. 알파(투명도)는 절대 바꾸지 않는다. 결과는 RGBA PNG.
+- **팩이 있으면 항상 `--pack` 을 쓴다.** 먼저 모든 프레임을 중립 그림과 맞춰 보고(관문: 접힘 ≤ 0.055, 구조 일치 ≥ 0.68,
+  흐름 전 실루엣 겹침 ≥ 0.71), 방향 묶음마다 80% 이상 통과하면 통과한 프레임에 참고 빛을, 아니면 그 묶음 전체를 워시+림으로 한다.
+  관문을 못 넘은 프레임은 절대 참고 빛을 받지 않는다. 출력에 `view=..: 92% of 12 frames pass ...` 와 프레임마다
+  `reference 95% (fold .., match .., iou ..)` 또는 `wash+rim fallback (...)` 이 찍힌다 → 사용자에게 알린다. 프레임마다 따로 정하려면 `--per-frame`.
+- 방향마다 참고 그림이 하나씩 있으면 방향마다 팩을 만들어 쓴다 (예: `forest_sunset_se.pack`). 참고가 없는 방향은 워시+림이다.
+- 팩 없이: 프레임당 1~3초. 팩 사용: 프레임당 약 5초. 프레임 하나가 실패해도 나머지는 저장된다. 알파(투명도)는 절대 바꾸지 않는다.
+- 그림 높이 약 200 px 미만의 아주 작은 스프라이트, 허리에서 잘린 윗몸 그림은 맞추기가 안 되어 워시+림이 된다 (안전한 쪽).
 - `--view-from-name`: 파일 이름에서 방향을 읽는다. `front`/`s`/`남`, `front_left`/`sw`/`남서`, `front_right`/`se`/`남동`,
   `left`/`w`/`서`, `right`/`e`/`동`, `back`/`n`/`북`, `back_left`/`nw`, `back_right`/`ne`. 못 읽으면 `--view` 값(기본: 정면·3/4 취급).
 - 한 방향짜리 묶음이면 `--view back` 처럼 직접 준다.
@@ -47,7 +58,7 @@ python relight.py apply scenes/forest_sunset.json frames/*.png -o out/forest_sun
 ```bash
 python relight.py preview scenes/forest_sunset.json frames/walk_03.png --bg background.png --place 640,602,240 -o shot.png
 ```
-- `--place 발중심x,발y,스프라이트높이` (배경 픽셀 단위). 이미 relight 한 PNG 면 `--already-relit`.
+- `--place 발중심x,발y,스프라이트높이` (배경 픽셀 단위). 이미 relight 한 PNG 면 `--already-relit`. 팩이 있으면 `--pack` 도 준다.
 - `--shadow`(발밑 그림자 0.55) `--wrap`(가장자리 빛 번짐 0.35) `--dim`(장면 안 밝기 0.95).
 - 게임 엔진에서는 relight 된 프레임을 쓰고, 발밑 그림자·빛 번짐은 엔진 쪽에서 같은 값으로 넣는다.
 
@@ -65,5 +76,5 @@ python relight.py preview scenes/forest_sunset.json frames/walk_03.png --bg back
 
 ## 테스트
 ```bash
-python -m pytest -q tests      # 합성 인형으로 15개 불변식 (알파 보존, 결정성, 빛 방향 학습, 원화 모양 보존, 몸 안쪽 무모양, 방향 힌트 ...)
+python -m pytest -q tests      # 합성 인형으로 20개 불변식 (알파 보존, 결정성, 빛 방향, 원화 모양 보존, 몸 안쪽 무모양, 참고 팩: 참고에 가까워짐·다른 그림은 완전 대체·위치 이동 따라감 ...)
 ```

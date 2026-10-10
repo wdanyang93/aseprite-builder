@@ -409,6 +409,8 @@ def _finish_fit(prof, neutral, pairs, g, cfg, view, Lr):
 # ------------------------------------------------------------------ apply
 def relight(frame, prof, view=None):
     """Relight one frame (float RGBA). Uses only the frame and the profile."""
+    if not (frame[..., 3] > 0.5).any():  # empty cell (common at the ends of exported strips)
+        return frame.astype(np.float32).copy()
     mats = materials(frame)
     base = apply_color(frame, prof["color"], mats)
     cfg, th = prof["cfg"], prof["light"]

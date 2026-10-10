@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+# reference packs contain the artist's images - keep them private
+scenes/*.pack/
+*.pack/

@@ -18,14 +18,15 @@ def _bbox(a):
 
 
 def _similarity(na, ra):
-    """Scale / rotation / translation of neutral alpha onto reference alpha (bottom-centre anchored)."""
+    """Scale / rotation / translation of neutral alpha onto reference alpha (bottom-centre anchored).
+    Coarse grid search at ~140 px figure height, then local refinement at ~420 px (full resolution is not needed:
+    the optical flow that follows absorbs the remaining pixel-level error)."""
+    na = np.ascontiguousarray(na, np.float32)   # a strided alpha view makes every warpAffine copy the plane
+    ra = np.ascontiguousarray(ra, np.float32)
     nb, rb = _bbox(na), _bbox(ra)
     s0 = (rb[3] - rb[1]) / (nb[3] - nb[1])
     H, W = ra.shape
-    # search at <= 420 px figure height for speed
-    q = min(1.0, 420.0 / (rb[3] - rb[1]))
-    raq = cv2.resize(ra, (int(W * q) + 1, int(H * q) + 1), interpolation=cv2.INTER_AREA) > 0.5
-    Hq, Wq = raq.shape
+    Hr = rb[3] - rb[1]
 
     def M_of(s, dx, dy, rot, qq=1.0):
         c, si = np.cos(rot) * s, np.sin(rot) * s
@@ -34,37 +35,38 @@ def _similarity(na, ra):
         M = np.array([[c, -si, tx - (c * cx - si * cy)], [si, c, ty - (si * cx + c * cy)]], np.float32)
         return M * qq
 
-    def iou(p, full=False):
-        if full:
-            wa = cv2.warpAffine(na, M_of(*p), (W, H)) > 0.5
-            R = ra > 0.5
-        else:
-            wa = cv2.warpAffine(na, M_of(*p, qq=q), (Wq, Hq)) > 0.5
-            R = raq
-        return (wa & R).sum() / max((wa | R).sum(), 1)
+    def scorer(target_h):
+        q = min(1.0, target_h / Hr)
+        R = cv2.resize(ra, (int(W * q) + 1, int(H * q) + 1), interpolation=cv2.INTER_AREA) > 0.5
+        Hq, Wq = R.shape
 
-    Hr = rb[3] - rb[1]
+        def iou(p):
+            wa = cv2.warpAffine(na, M_of(*p, qq=q), (Wq, Hq)) > 0.5
+            return (wa & R).sum() / max((wa | R).sum(), 1)
+        return iou
+
+    coarse = scorer(140)
     best = (-1, None)
     for s in s0 * np.linspace(0.92, 1.08, 9):
         for rot in np.radians([-3, -1.5, 0, 1.5, 3]):
             for dx in np.linspace(-0.05, 0.05, 11) * Hr:
                 for dy in np.linspace(-0.036, 0.036, 7) * Hr:
-                    v = iou((s, dx, dy, rot))
+                    v = coarse((s, dx, dy, rot))
                     if v > best[0]:
                         best = (v, (s, dx, dy, rot))
-    s, dx, dy, rot = best[1]
-    best = (iou(best[1], True), best[1])
-    step = 0.004 * Hr
-    for _ in range(3):
-        for ds in np.linspace(-0.01, 0.01, 5) * s0:
-            for dr in np.radians([-0.5, 0, 0.5]):
-                for ddx in (-step, 0, step):
-                    for ddy in (-step, 0, step):
-                        p = (s + ds, dx + ddx, dy + ddy, rot + dr)
-                        v = iou(p, True)
-                        if v > best[0]:
-                            best = (v, p)
-        s, dx, dy, rot = best[1]
+    fine = scorer(420)
+    best = (fine(best[1]), best[1])
+    for step, ds_, dr_ in ((0.008, 0.01, 0.75), (0.004, 0.005, 0.4), (0.002, 0.0025, 0.2)):
+        for _ in range(2):
+            s, dx, dy, rot = best[1]
+            for ds in np.linspace(-ds_, ds_, 3) * s0:
+                for dr in np.radians([-dr_, 0, dr_]):
+                    for ddx in (-step * Hr, 0, step * Hr):
+                        for ddy in (-step * Hr, 0, step * Hr):
+                            p = (s + ds, dx + ddx, dy + ddy, rot + dr)
+                            v = fine(p)
+                            if v > best[0]:
+                                best = (v, p)
     return M_of(*best[1]), float(best[0])
 
 
@@ -75,7 +77,7 @@ def _gray(rgba):
 class Pairs:
     """Neutral frame aligned into the reference frame + label-free fitting regions."""
 
-    def __init__(self, neutral, ref, cell=0.12):
+    def __init__(self, neutral, ref, cell=0.12, regions=True):
         self.neutral, self.ref = neutral, ref
         H, W = ref.shape[:2]
         self.shape = (H, W)
@@ -97,7 +99,8 @@ class Pairs:
         self.mat = materials(self.neutral_w)
         line = cv2.dilate(self.mat["line"].astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
         self.reliable &= ~line
-        self._make_regions(cell)
+        if regions:
+            self._make_regions(cell)
 
     def warp(self, x):
         """neutral-space image -> reference frame"""

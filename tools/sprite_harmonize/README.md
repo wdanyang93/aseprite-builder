@@ -9,12 +9,22 @@
 
 ```bash
 pip install -r requirements.txt
-python relight.py fit neutral.png reference.png -o scenes/forest_sunset.json --sheet check.png   # 장면마다 한 번 (~1.5분)
-python relight.py apply scenes/forest_sunset.json frames/*.png -o out/ --view-from-name --sheet ba.png   # 프레임당 1~3초
+python relight.py fit neutral.png reference.png -o scenes/forest_sunset.json --pack scenes/forest_sunset.pack --sheet check.png  # 장면마다 한 번
+python relight.py apply scenes/forest_sunset.json frames/*.png -o out/ --pack scenes/forest_sunset.pack --view-from-name --sheet ba.png
 python relight.py preview scenes/forest_sunset.json frames/walk_03.png --bg bg.png --place 640,602,240 -o shot.png
 ```
 
-## 방법
+## 두 가지 모드
+- **참고 팩 (`--pack`)** — 참고 그림의 실제 빛·색을 옮긴다. 참고와 같은 방향의 프레임에 쓴다 (참고 일치 0.898, 원화 모양 보존 0.953).
+  참고를 중립 그림 모양에 화소 단위로 맞춰 두고, 프레임마다 **그 프레임 자신의 색과 비교해** 차이를 옮긴다 (중립의 세부가 찍히지 않음).
+  몸 안쪽은 부드러운 빛·색만(그림 높이 1.5%), 실루엣 가장자리는 참고의 림을 윤곽을 따라, 선은 밝아지지 않게. 선·무늬는 그대로.
+  관문 (크기와 무관하게, 그림 높이를 중립에 맞춘 뒤 잼): 접힘 ≤ 0.055, 구조 일치 ≥ 0.68, 흐름 전 실루엣 겹침 ≥ 0.71
+  (40여 사례로 맞춤: 같은 그림·다시 그린 그림·옷 바뀜은 통과, 다른 방향·옷·좌우반전·잘린 그림은 통째로 워시+림).
+  `apply` 는 방향 묶음 단위로 판단해서 한 애니메이션 안에서 깜빡이지 않는다 (묶음은 강등만 함).
+  팩에는 그림 데이터가 들어 있어 공개 저장소에 올리지 않는다 (`.gitignore`).
+- **워시 + 림** — 팩이 없거나 프레임이 안 맞을 때. 아래 표의 방법.
+
+## 방법 (워시 + 림)
 
 | 단계 | 내용 | 왜 |
 |---|---|---|
@@ -40,7 +50,12 @@ python relight.py preview scenes/forest_sunset.json frames/walk_03.png --bg bg.p
 | v4 색 식 (색만) | 0.595 | 0.74 | 0.86 | 5.6 | 1.000 | 65.5 |
 | 가슴 타원체 버전 (첫 배포) | 0.832 | 0.93 | 0.88 | 5.5 | 0.906 ✗ 가슴 가운데 모양 바뀜 | 66.0 |
 | 타원체 끔, 실루엣 Lambert (둘째) | 0.812 | 0.90 | 0.87 | 5.9 | 0.990 (윗가슴에 대각선 빛 경계 ✗ 불룩해 보임) | 66.0 |
-| **이 도구: 워시 + 림 (지금 기본값)** | **0.757** | **0.84** | **0.86** | **6.4** | **0.995** | **66.0** |
+| 워시 + 림 (팩 없을 때) | 0.757 | 0.84 | 0.86 | 6.4 | 0.995 | 66.0 |
+| **참고 팩 (`--pack`)** | **0.898**¹ | — | — | **2.4**¹ | **0.953** | **66.3** |
+
+¹ 이 열은 이름표 없는 격자 지표(`fit` 출력) 기준이다: 같은 지표로 워시+림 0.668 / 색 오차 6.8, 중립 0.476.
+흉내 낸 애니메이션 프레임(팔·다리·크기·기울기 변형)에서 참고 빛이 몸을 따라간다. 다른 옷 턴어라운드 8방향(1×·1.8×·3×)은 전부 워시+림.
+팩 사용 시 프레임당 약 5초 (게이트만 0.3~0.7초), 작업 그림 높이 1024 px.
 
 - 첫 배포는 가슴 타원체가 실제 가슴과 어긋나 **가운데 가슴 모양이 바뀌어 보였다**. 둘째 판은 실루엣 부풀림 위의 주광이
   목·어깨 오목한 곳에서 윗가슴으로 대각선 빛 경계를 만들어 **가운데 위쪽이 불룩해 보였다**. 지금은 몸 안쪽에는 완만한 기울기만,

@@ -44,8 +44,11 @@ def from_lab(lab):
 def lowpass(x, m, sigma):
     """Masked normalised Gaussian blur: values outside m don't bleed in."""
     m = m.astype(np.float32)
-    num = cv2.GaussianBlur(x * m, (0, 0), sigma)
     den = cv2.GaussianBlur(m, (0, 0), sigma)
+    if x.ndim == 3:  # multi-channel (e.g. Lab): same mask for every channel
+        num = cv2.GaussianBlur(x * m[..., None], (0, 0), sigma)
+        return num / np.maximum(den, 1e-4)[..., None]
+    num = cv2.GaussianBlur(x * m, (0, 0), sigma)
     return num / np.maximum(den, 1e-4)
 
 
