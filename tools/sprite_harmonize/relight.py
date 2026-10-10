@@ -82,16 +82,23 @@ def cmd_fit(a):
     if a.pack:
         pk = transfer.build_pack(n, r, prof)
         transfer.save_pack(a.pack, pk)
-        tr, info = transfer.relight_transfer(n, prof, transfer.load_pack(a.pack), a.view)
-        mt = report.metrics(tr, pairs)
+        lp = transfer.load_pack(a.pack)
+        soft, info = transfer.relight_transfer(n, prof, lp, a.view, chest=False)
+        tr, cinfo = transfer.relight_transfer(n, prof, lp, a.view)
+        ms, mt = report.metrics(soft, pairs), report.metrics(tr, pairs)
         print(f"reference pack -> {a.pack}  (contains your art: keep it out of public repos)")
-        print("  with pack: shape agreement {shape_agreement:.3f}  drawn form kept {drawn_form_kept:.3f}  "
-              "colour error {color_error_lowfreq:.2f}  mean L* {mean_L:.1f}".format(**mt)
-              + f"  reference coverage {info['coverage']:.2f}")
+        print("  with pack: shape agreement {shape_agreement:.3f}  colour error {color_error_lowfreq:.2f}  "
+              "mean L* {mean_L:.1f}".format(**mt) + f"  reference coverage {info['coverage']:.2f}")
+        print("  soft transfer (body): drawn form kept {:.3f}".format(ms["drawn_form_kept"]))
+        if cinfo.get("chest") == "ok":
+            print("  chest stage: on - the breasts take the reference's light, cut by the drawn lines "
+                  "(drawn form kept {:.3f} there by design; line art is never lightened)".format(mt["drawn_form_kept"]))
+        else:
+            print(f"  chest stage: skipped ({cinfo.get('chest', 'frame failed the gates')})")
         if not info["passed"]:
             print("WARNING: the neutral itself does not pass the pack gates - the pack would never be used.")
-        if mt["drawn_form_kept"] < 0.95:
-            print("WARNING: with the pack the chest shading departs from the drawing (drawn form kept < 0.95).")
+        if ms["drawn_form_kept"] < 0.95:
+            print("WARNING: with the pack the body shading departs from the drawing (drawn form kept < 0.95).")
         if a.sheet:
             root, ext = os.path.splitext(a.sheet)
             report.sheet(tr, pairs, root + "_pack" + ext)
@@ -110,10 +117,15 @@ def relight_one(f, prof, pack, view, a):
     """Reference look when a pack is given and the frame passes the gates, else wash+rim."""
     if pack is None:
         return relight(f, prof, view), "wash+rim"
-    o, info = transfer.relight_transfer(f, prof, pack, view, _gates(a))
+    o, info = transfer.relight_transfer(f, prof, pack, view, _gates(a), chest=not a.no_chest)
     if info["passed"]:
-        return o, f"reference {info['coverage']:.0%} ({_why(info)})"
+        return o, f"reference {info['coverage']:.0%} ({_why(info)}){_chest(info)}"
     return o, f"wash+rim fallback ({_why(info)})"
+
+
+def _chest(info):
+    c = info.get("chest")
+    return "" if c is None else ("  chest light: on" if c == "ok" else f"  chest light: skipped ({c})")
 
 
 def _thumb(x, h=480):
@@ -163,8 +175,9 @@ def cmd_apply(a):
         try:
             f = load_sprite(p, not a.no_defringe)
             if use_ref.get(p):
-                o, info = transfer.relight_transfer(f, prof, pack, view, _gates(a))
-                how = (f"reference {info['coverage']:.0%}" if info["passed"] else "wash+rim fallback") + f" ({_why(info)})"
+                o, info = transfer.relight_transfer(f, prof, pack, view, _gates(a), chest=not a.no_chest)
+                how = ((f"reference {info['coverage']:.0%}" if info["passed"] else "wash+rim fallback")
+                       + f" ({_why(info)})" + (_chest(info) if info["passed"] else ""))
             else:
                 o = relight(f, prof, view)
                 how = "wash+rim" if pack is None else f"wash+rim fallback ({_why(j['info'])})"
@@ -253,6 +266,8 @@ def main(argv=None):
                          help="pack gate: max share of folded (impossible) correspondence")
         sp_.add_argument("--min-iou-affine", type=float, default=transfer.GATES["min_iou_affine"],
                          help="pack gate: silhouette overlap before optical flow")
+        sp_.add_argument("--no-chest", action="store_true",
+                         help="pack: skip the chest stage (fine reference light on the breasts, cut by the drawn lines)")
     ap.add_argument("--group-ratio", type=float, default=0.8,
                     help="pack: use the reference for a whole view group when this share of its frames pass")
     ap.add_argument("--per-frame", action="store_true", help="pack: decide frame by frame (may flicker)")

@@ -12,6 +12,8 @@ apply (per frame):
        near the silhouette (exp falloff ~2%): the reference's rim light, low-passed ALONG the contour
      line art may darken with the scene but is never lightened
   4. blended with the wash+rim relight by a smooth confidence weight
+  5. chest stage (chest.py): on the breasts only, the reference's light at a fine scale, cut by the drawn lines
+     (cleavage line, cup outlines) and the cup print softened so the light on the form reads
 
 The pack holds pixel data of your art (neutral + warped reference): keep it with the project, not in a public repo.
 """
@@ -23,6 +25,7 @@ import numpy as np
 from .align import Pairs, _gray
 from .color import apply_color, from_lab, load_rgba, lowpass, materials, save_rgba, to_lab
 from . import shading
+from .chest import chest_light
 
 PACK_VERSION = 2
 SIGMA_FINE = 0.008       # rim layer low-pass (fraction of figure height), applied per distance band
@@ -175,7 +178,7 @@ def _align(frame_c, pack):
     return Fs, P, Hn, info
 
 
-def _transfer(frame, profile, pack, view=None, gates=None):
+def _transfer(frame, profile, pack, view=None, gates=None, chest=True):
     """Returns (transfer_rgba or None, fallback_rgba, info). None when the frame fails the gates."""
     fallback = shading.relight(frame, profile, view)
     info = {"iou": 0.0, "iou_affine": 0.0, "fold": 1.0, "match": 0.0, "coverage": 0.0}
@@ -226,7 +229,13 @@ def _transfer(frame, profile, pack, view=None, gates=None):
     lab[..., 0] = np.clip(lab[..., 0], 0, 100)
     rgb = from_lab(lab) * W_[..., None] + fallback[..., :3] * (1 - W_[..., None])
     info["coverage"] = float(W_[frame[..., 3] > 0.5].mean())
-    return np.dstack([rgb, frame[..., 3]]).astype(np.float32), fallback, info
+    res = np.dstack([rgb, frame[..., 3]]).astype(np.float32)
+    if chest:                                        # fine reference light on the breasts, cut by the drawn lines
+        Rf = np.zeros_like(res)
+        Rf[y0:y1, x0:x1] = cv2.resize(R, (x1 - x0, y1 - y0), interpolation=cv2.INTER_LINEAR)
+        res, cinfo = chest_light(frame, res, Rf, W_)
+        info.update(cinfo)
+    return res, fallback, info
 
 
 def gate(frame, pack, gates=None):
@@ -245,9 +254,9 @@ def passes(info, gates=None):
             and info["iou_affine"] >= g["min_iou_affine"])
 
 
-def relight_transfer(frame, profile, pack, view=None, gates=None):
+def relight_transfer(frame, profile, pack, view=None, gates=None, chest=True):
     """One frame: reference look if the frame passes the gates, else wash+rim. Returns (rgba, info)."""
-    out, fallback, info = _transfer(frame, profile, pack, view, gates)
+    out, fallback, info = _transfer(frame, profile, pack, view, gates, chest)
     info["passed"] = out is not None and passes(info, gates)
     if not info["passed"]:
         info["coverage"] = 0.0

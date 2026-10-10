@@ -234,3 +234,56 @@ def test_pack_errors_are_clear(tmp_path):
     from scenelight import transfer
     with pytest.raises(FileNotFoundError):
         transfer.load_pack(str(tmp_path))
+
+
+# ------------------------------------------------------------------ chest stage (pack mode)
+def _drawn_chest():
+    """The synthetic figure with drawn cup outlines and a cleavage line, plus a reference lit on the left breast's
+    inner side (against the cleavage line) and darker under the cups."""
+    f = figure()
+    cx = f.shape[1] // 2
+    ink = np.zeros(f.shape[:2], np.uint8)
+    cv2.ellipse(ink, (cx - 18, 112), (18, 15), 0, 0, 360, 1, 1)
+    cv2.ellipse(ink, (cx + 18, 112), (18, 15), 0, 0, 360, 1, 1)
+    cv2.line(ink, (cx, 92), (cx, 100), 1, 1)
+    f[ink > 0, :3] = 0.18
+    r = f.copy()
+    yy, xx = np.mgrid[0:f.shape[0], 0:f.shape[1]].astype(np.float32)
+    light = 0.25 * np.exp(-(((xx - (cx - 6)) / 6) ** 2 + ((yy - 104) / 7) ** 2))
+    light -= 0.2 * np.exp(-(((yy - 124) / 4) ** 2)) * (np.abs(xx - cx) < 36)
+    r[..., :3] = np.clip(f[..., :3] * (1 + light)[..., None], 0, 1)
+    return f, r, ink > 0
+
+
+def test_chest_stage_moves_toward_reference_and_keeps_lines():
+    from scenelight.chest import chest_light, find_cups
+    from scenelight.color import lowpass
+    f, r, ink = _drawn_chest()
+    cups, Hf, why = find_cups(f)
+    assert why == "ok" and cups is not None
+    o, info = chest_light(f, f, r)
+    assert info["chest"] == "ok"
+    assert np.array_equal(o[..., 3], f[..., 3]) and np.isfinite(o).all()
+    a = f[..., 3] > 0.5
+    Lf, Lo, Lr = (to_lab(x[..., :3])[..., 0] for x in (f, o, r))
+    zone = np.zeros_like(a)
+    zone[90:135, 90:170] = True
+    zone &= a & ~cv2.dilate(ink.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    lp = lambda L: lowpass(L, a, 2)
+    err_before = np.abs(lp(Lf) - lp(Lr))[zone].mean()
+    err_after = np.abs(lp(Lo) - lp(Lr))[zone].mean()
+    assert err_after < 0.7 * err_before, (err_before, err_after)
+    assert (Lo - Lf)[ink].max() <= 0.5          # drawn lines never lighter
+    far = np.zeros_like(a)
+    far[200:, :] = True                           # legs: outside the chest zone
+    far[:60, :] = True                            # head
+    assert np.abs(o[..., :3] - f[..., :3])[far].max() < 1e-6
+
+
+def test_chest_stage_skips_frames_without_cups():
+    from scenelight.chest import chest_light
+    f, r, _ = _drawn_chest()
+    g = f.copy()
+    g[..., :3] = np.where((to_lab(f[..., :3])[..., 1:2] ** 2 + to_lab(f[..., :3])[..., 2:3] ** 2) < 81, SKIN, f[..., :3])
+    o, info = chest_light(g, g, r)
+    assert info["chest"] != "ok" and np.array_equal(o, g)
