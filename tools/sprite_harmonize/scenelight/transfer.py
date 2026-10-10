@@ -72,6 +72,9 @@ def build_pack(neutral, ref, profile=None):
 
 def save_pack(path, pack):
     os.makedirs(path, exist_ok=True)
+    old = os.path.join(path, "delta.npz")   # v1 leftover
+    if os.path.exists(old):
+        os.remove(old)
     save_rgba(os.path.join(path, "neutral.png"), pack["neutral"])
     save_rgba(os.path.join(path, "reference_in_neutral.png"), pack["ref"])
     np.savez_compressed(os.path.join(path, "conf.npz"), conf_fine=pack["conf_fine"], conf_cover=pack["conf_cover"],
