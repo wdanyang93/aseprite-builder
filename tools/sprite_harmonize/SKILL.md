@@ -33,9 +33,9 @@ python relight.py fit neutral.png reference.png -o scenes/<장면이름>.json --
 - `shape agreement`(명암 모양 일치도, 1이 완전 일치)가 neutral 값보다 올라가야 하고, `mean L*` 가 reference 와 ±2 안이어야 한다.
 - `drawn form kept`(원화 모양 보존)는 0.95 이상이어야 한다. 낮으면 그림의 가슴 모양이 달라 보인다 → 사용자에게 알리고 시트를 보여 준다.
 - `check_*.png` 를 사용자에게 보여 준다 (중립 | 새 식 | 참고, 윗몸 확대, 부위 안 명암 지도: 빨강 = 밝음, 파랑 = 어두움).
-  `--pack` 이면 `check_*_pack.png` 도 나온다. 팩 결과: 린 숲 석양 `with pack: shape agreement 0.900`,
+  `--pack` 이면 `check_*_pack.png` 도 나온다. 팩 결과: 린 숲 석양 `with pack: shape agreement 0.902`,
   `soft transfer (body): drawn form kept 0.953`, `chest stage: on`.
-  `soft transfer (body)` 값이 0.95 미만이면 경고가 나온다 → 사용자에게 알린다. 가슴 단계 줄의 값(약 0.90)은 가슴 안쪽이 일부러
+  `soft transfer (body)` 값이 0.95 미만이면 경고가 나온다 → 사용자에게 알린다. 가슴 단계 줄의 값(약 0.83)은 가슴 안쪽이 일부러
   참고의 빛을 따르기 때문에 낮은 것이다(사용자 요구).
 
 이미 있는 장면: `scenes/forest_sunset.json` (숲 석양, 린. 참고 = 사용자가 만든 따뜻한 참고 그림).
@@ -49,8 +49,8 @@ python relight.py apply scenes/forest_sunset.json frames/*.png -o out/forest_sun
   흐름 전 실루엣 겹침 ≥ 0.71), 방향 묶음마다 80% 이상 통과하면 통과한 프레임에 참고 빛을, 아니면 그 묶음 전체를 워시+림으로 한다.
   관문을 못 넘은 프레임은 절대 참고 빛을 받지 않는다. 출력에 `view=..: 92% of 12 frames pass ...` 와 프레임마다
   `reference 95% (fold .., match .., iou ..)  chest light: on` 또는 `wash+rim fallback (...)` 이 찍힌다 → 사용자에게 알린다. 프레임마다 따로 정하려면 `--per-frame`.
-- **가슴 단계** (팩 모드 기본): 참고 빛을 받는 프레임은 가슴 구역에서 참고의 빛을 가는 크기로 더 받는다. 하이라이트·그림자가 그려진 선
-  (골 선, 컵 윤곽)에서 끊기고, 컵 무늬 대비는 40%로 낮춰 형태 빛이 읽힌다. 선은 밝아지지 않고 구역 밖은 그대로다.
+- **가슴 단계** (팩 모드 기본): 참고 빛을 받는 프레임은 가슴 구역에서 참고의 빛을 **참고와 같은 세기로** 더 받는다. 하이라이트·그림자가
+  그려진 선(골 선, 컵 윤곽)에서 끊기고, 컵 무늬 대비는 40%로 낮춰 형태 빛이 읽힌다. 선은 밝아지지 않고 구역 밖은 그대로다.
   컵을 못 찾으면 `chest light: skipped (이유)` → 그 프레임은 가슴 단계 없이 저장된다. 끄려면 `--no-chest`.
   결과를 보고할 때 가슴 확대(전 | 후 | 참고)를 꼭 보여 준다 — 사용자가 가장 신경 쓰는 곳이다.
 - 방향마다 참고 그림이 하나씩 있으면 방향마다 팩을 만들어 쓴다 (예: `forest_sunset_se.pack`). 참고가 없는 방향은 워시+림이다.
