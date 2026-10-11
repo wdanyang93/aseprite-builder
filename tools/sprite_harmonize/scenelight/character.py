@@ -14,12 +14,12 @@ The card folder holds data derived from the user's art (region maps, preview): i
     save_card("chars/lyn_outfit2", card)       # card.json + maps.npz + preview.png
     card = load_card("chars/lyn_outfit2")
     fa = analyze_frame(frame_rgba, card)       # per-frame geometry, lines, palette index, regions, texture
+Line maps here are two-pass (lines_with_texture): strokes inside fur / hair texture must be nearly ink-dark.
 """
 import json
 import os
 
 import numpy as np
-import cv2
 
 from .color import load_rgba, from_lab, save_rgb
 from .geom import GEOM, analyze, figure_height
@@ -62,6 +62,16 @@ def calibrate_lines(origs, p=None):
             "blur": LINES["blur"]}
 
 
+def lines_with_texture(rgba, H, lp=None):
+    """Line map in two passes: lines -> fur / hair texture regions -> lines again with the strict test inside them
+    (lines.line_map strict). The texture mask is returned in the dict as "texture"."""
+    lm0 = line_map(rgba, H, lp)
+    tm = texture(rgba, H, lm0)[1]
+    lm = line_map(rgba, H, lp, strict=tm)
+    lm["texture"] = tm
+    return lm
+
+
 def line_params(card):
     """Parameters for lines.line_map from a card (None -> defaults)."""
     if not card:
@@ -82,7 +92,7 @@ def build_card(origs, name="character", p=None):
     per, pix, lms = [], [], []
     for f, fn in items:
         H = figure_height(f[..., 3])
-        lm = line_map(f, H, lp)
+        lm = lines_with_texture(f, H, lp)
         lms.append(lm)
         pix.append(palette_pixels(f, lm["weight"], H))
     pal = fit_palette(np.concatenate(pix) if pix else np.zeros((0, 3)))
@@ -91,7 +101,7 @@ def build_card(origs, name="character", p=None):
         H = figure_height(f[..., 3])
         fig = f[..., 3] > 0.5
         seg = segment(f, pal["centres"], lm["weight"], H)
-        tw, tm = texture(f, H, lm)
+        tm = lm["texture"]
         g = analyze(f[..., 3], arc=False)
         per.append({"file": fn, "shape": list(f.shape[:2]), "H": H,
                     "line_share": round(float(lm["weight"][fig].mean()), 4) if fig.any() else 0.0,
@@ -174,26 +184,29 @@ def palette_card(card, sw=48):
 
 def analyze_frame(rgba, card=None, geometry=True):
     """Per-frame analysis with a character card (design 2.7-1): geometry (geom.analyze), line map with the card's line
-    parameters, nearest card palette colour per pixel (-1 = colour the card has never seen), the frame's own
+    parameters, nearest card palette colour per pixel (-1 = colour the card has never seen; new_colour_share counts
+    the non-line pixels that are -1, the warning for a palette the card does not know), the frame's own
     line-walled regions in card colours, and the texture map. Without a card everything uses the defaults and the
     palette is fitted on the frame itself."""
     rgba = np.asarray(rgba, np.float32)
     H = figure_height(rgba[..., 3])
     out = {"H": H}
-    lm = line_map(rgba, H, line_params(card))
+    lm = lines_with_texture(rgba, H, line_params(card))
     out["lines"] = lm
     if card:
         centres = np.array(card["palette"]["lab"], np.float32)
-        rp = {"w_L": card["palette"].get("w_L", REGIONS["w_L"]), "max_dE": card["palette"].get("max_dE", REGIONS["max_dE"])}
+        pal = card["palette"]
+        rp = {"w_L": pal.get("w_L", REGIONS["w_L"]), "max_dE": pal.get("max_dE", REGIONS["max_dE"])}
     else:
         centres = fit_palette(palette_pixels(rgba, lm["weight"], H))["centres"]
         rp = {}
     idx, dist = assign(rgba, centres, rp)
     fig = rgba[..., 3] > 0.5
     out["palette_index"], out["palette_dist"] = idx, dist
-    out["new_colour_share"] = round(float((idx[fig] < 0).mean()), 4) if fig.any() else 0.0
+    surf = fig & (lm["weight"] <= REGIONS["line_w"])      # line art is not a region colour (black outlines)
+    out["new_colour_share"] = round(float((idx[surf] < 0).mean()), 4) if surf.any() else 0.0
     out["regions"] = segment(rgba, centres, lm["weight"], H, rp)
-    out["texture"] = texture(rgba, H, lm)[1]
+    out["texture"] = lm["texture"]
     if geometry:
         out["geom"] = analyze(rgba[..., 3])
     return out

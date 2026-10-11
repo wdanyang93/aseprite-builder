@@ -113,6 +113,32 @@ def r_methods():
         row("R_methods run_night.json", tname, m, "dEst", night[tname]["dE_struct"], float(acc[:, 1].mean()))
 
 
+def r_methods_lomo():
+    """DESIGN 2.5 / T6 (R_methods run_lomo_night.py, printed only): hide one material when fitting on the synthetic night,
+    test it on the other direction. M4 skin 6.01 -> 5.83, M2a 6.30 -> 7.92."""
+    RM = protos.load("R_methods", "methods")
+    from scenelight.color import materials
+    NR, NL = data.drawing("lyn_R"), data.drawing("lyn_L")
+    TR, TL = CS.synth_truth("methods", "moon_lantern", "lyn_R"), CS.synth_truth("methods", "moon_lantern", "lyn_L")
+    mats = materials(NR)
+    def make():
+        out = {}
+        try:
+            for hide in ("none", "skin"):
+                RM.EXCL = None if hide == "none" else (mats[hide] > 0.3)
+                for name, mk in (("M2a", lambda: RM.V3(RM.AngleTable(shrink=20.0))), ("M4", lambda: RM.V3(RM.RatioTable(shrink=20.0)))):
+                    o = mk().fit(NR, TR).apply(NL)
+                    out[f"{name}_{hide}"] = MX.score_rmethods(o, TL, NL, None)["dE_skin"]
+        finally:
+            RM.EXCL = None
+        return out
+    r = config.cached_json("t0_lomo_night", make, sub="t0")
+    for key, src_v in (("M4_none", 6.01), ("M4_skin", 5.83), ("M2a_none", 6.30), ("M2a_skin", 7.92)):
+        m, hide = key.split("_")
+        row("DESIGN_GENERAL 2.5 (R_methods run_lomo_night.py)", f"synthetic night R->L, skin dE, hidden in fit: {hide}",
+            m + "v3", "dE skin", src_v, r[key])
+
+
 # ------------------------------------------------------------------ D-E: R_audit
 def r_audit():
     pr = json.load(open(_src("R_audit", "proto_ratio.json")))
@@ -133,6 +159,23 @@ def r_audit():
             for k in ("wcloth", "skin", "all"):
                 row("R_audit proto_ratio.json", name, m, f"lp_dE {k}", pr[name][key][k]["lp_dE"], ev[k]["lp_dE"])
             row("R_audit proto_ratio.json", name, m, "hp all", pr[name][key]["all"]["hp_ratio"], ev["all"]["hp_ratio"])
+    # the darkness case once more on R_audit's own float16 copy of the aligned reference (input-precision check)
+    z = np.load(_src("R_audit", "cache", "lyn_right.npz"))
+    from . import synth_audit as SAU
+    G16 = SAU.darkness_from_ref(z["R0"].astype(np.float32))
+    def make16():
+        from scenelight import fit_scene, transfer
+        prof, _ = fit_scene(N, G16)
+        d = config.cache_dir("t0_pack_darkness_f16")
+        transfer.save_pack(d, transfer.build_pack(N, G16, prof))
+        out, _ = transfer.relight_transfer(N, prof, transfer.load_pack(d), None, None, True)
+        ev = MX.eval_audit(out, G16, M, Hf)
+        return {k: ev[k]["lp_dE"] for k in ("wcloth", "skin", "all")}
+    r16 = config.cached_json("t0_darkness_f16", make16, sub="t0")
+    for k in ("wcloth", "skin", "all"):
+        row("R_audit proto_ratio.json", "darkness_ref: neutral [R_audit's float16 reference copy]", "tool_pack",
+            f"lp_dE {k}", pr["darkness_ref: neutral"]["tool_pack"][k]["lp_dE"], r16[k],
+            "same input bits as R_audit: exact")
     # out/<case>/log.json: the current tool on the real pair, the left frame, small frames, graded-reference alignment
     lg = lambda c: json.load(open(_src("R_audit", "out", c, "log.json")))
     L = lg("base_real")
@@ -296,12 +339,35 @@ def design_azimuth():
     for name, side, src_v in (("lyn_R", "R", 20.6), ("lyn_L", "L", 20.3)):
         r = config.cached_json(f"az_real_{name}", lambda side=side: estimators.estimate(data.lyn(side)["neutral"],
                                                                                         data.lyn(side)["ref"]), sub="azimuth")
-        row("DESIGN_GENERAL 1.2 (R_methods estimate_light_dir)", f"real {name}: azimuth, linear", "R_methods", "deg",
-            src_v, r["lin_methods"], angle=True)
+        row("DESIGN_GENERAL 1.2 (R_methods estimate_light_dir)", f"real {name}: azimuth, linear (dt normals)", "R_methods",
+            "deg", src_v, r["lin_methods_dt"], angle=True,
+            note=f"current default normals ('nc') give {r['lin_methods']:.1f}")
 
+
+NOTES = [
+    "R_methods numbers are reproduced on the same aligned references (the bench's alignment is bit-identical to the "
+    "R_methods / R_audit / R_practice caches) with metrics.score_rmethods (sigma 0.6 % H, sunrim parts, sun at 40 deg).",
+    "R_methods' linear azimuth 20.6 / 20.3 deg (design 1.2) was measured with the distance-transform normals "
+    "(common.NORMALS = 'dt'); the current default 'nc' (normalized convolution) gives 22.0 / 27.7 deg.",
+    "R_practice real-pair azimuths: the right pair's linear init differs by -0.9 deg (21.5 vs 22.3) and J&F by -0.1 deg; "
+    "the left pair is exact. Inputs are bit-identical aligned references; the source JSON predates the last edits of the "
+    "research folder, so the residual is not traced further (within tolerance).",
+    "The model2 rows quote the design (rounded to 0.1); the bench reruns R_practice model2.py's swap test "
+    "(fit right pair, render the recoloured left neutral, score the recoloured parts).",
+    "Design 2.2 quotes post-flow IoU 0.862 (night) / 0.633 (darkness); those numbers are not in any R_audit file. "
+    "The R_audit logs hold the fit alignment IoU 0.936 / 0.775 (reproduced above, rows 'fit alignment').",
+    "The tool's fit crash at a 96 px figure height (shading.py:322) is reproduced (status row).",
+    "Synthetic truths are cached as float32: with a float16 cache the current tool's midday pack moved from 3.30 to 3.12 "
+    "(skin), the tool's colour fit reacts to 1e-4 input changes.",
+]
 
 # explanations of reproduction mismatches (filled in after investigating each; keyed by a substring of the setting)
-EXPLAIN = {}
+EXPLAIN = {
+    "darkness_ref: neutral": "the current tool's pack on a near-black reference reacts to ~1e-4 input differences: the bench "
+                             "builds the graded reference from its float32 aligned reference, R_audit from a float16 copy "
+                             "(max difference 2.4e-4). On R_audit's own float16 copy the bench reproduces 0.91 / 0.32 / 0.36 "
+                             "exactly (rows marked [R_audit's float16 reference copy]); absolute gaps are 0.02-0.08 dE.",
+}
 
 
 def write(path):
@@ -319,6 +385,7 @@ def write(path):
         d = "" if not np.isfinite(r["d"]) else f"{r['d']:+.1f}"
         lines.append(f"| {i} | {r['src']} | {r['setting']} | {r['method']} | {r['qty']} | {f(r['src_v'])} | {f(r['rep_v'])} | "
                      f"{d} | {'yes' if r['ok'] else 'NO'} | {r['note']} |")
+    lines += ["", "## Notes", ""] + [f"- {t}" for t in NOTES]
     bad = [(i, r) for i, r in enumerate(ROWS, 1) if not r["ok"]]
     if bad:
         lines += ["", "## Mismatches", ""]
@@ -333,7 +400,7 @@ def write(path):
 def main(jobs=2, log=print):
     ROWS.clear()
     t = time.time()
-    for part in (r_methods, r_audit, lambda: r_practice(jobs), s598, design_azimuth):
+    for part in (r_methods, r_methods_lomo, r_audit, lambda: r_practice(jobs), s598, design_azimuth):
         try:
             part()
         except Exception as e:

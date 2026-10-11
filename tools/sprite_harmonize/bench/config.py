@@ -71,8 +71,8 @@ def key_hash(*parts):
     return h[:12]
 
 
-def cached_array(name, fn, sub="arrays"):
-    """Load cache/<sub>/<name>.npz or compute fn() (float RGBA / arrays) and store it (float16 for images)."""
+def cached_array(name, fn, sub="arrays", f32=False):
+    """Load cache/<sub>/<name>.npz or compute fn() (float RGBA / arrays) and store it (float16 for images unless f32)."""
     p = os.path.join(cache_dir(sub), name + ".npz")
     if os.path.exists(p):
         try:
@@ -82,7 +82,7 @@ def cached_array(name, fn, sub="arrays"):
             os.remove(p)
     x = np.asarray(fn(), np.float32)
     tmp = p + f".{os.getpid()}.tmp.npz"
-    np.savez_compressed(tmp, x=x.astype(np.float16) if x.ndim == 3 else x)
+    np.savez_compressed(tmp, x=x.astype(np.float16) if (x.ndim == 3 and not f32) else x)
     os.replace(tmp, p)
     return x
 

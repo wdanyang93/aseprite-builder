@@ -97,8 +97,9 @@ def render(renderer, scene, N, drawing=None):
 
 def synth_truth(renderer, scene, drawing):
     """Ground truth of a synthetic scene on a drawing (cached)."""
+    # float32: the current tool's fit reacts to 1e-4 input differences (a float16 truth moved a T0 number by 5 %)
     return config.cached_array(f"{renderer}_{scene}_{drawing}", lambda: render(renderer, scene, data.drawing(drawing), drawing),
-                               sub="synth")
+                               sub="synth32", f32=True)
 
 
 # ------------------------------------------------------------------ fit pairs
@@ -122,7 +123,7 @@ def fit_pair(fit_id):
         if kind == "recsyn":
             scene, outfit = rest.split("/")
             N, _ = recolour_frame(outfit, "R")
-            G = config.cached_array(f"recsyn_{scene}_{outfit}", lambda: SA.lit(N, scene), sub="synth")
+            G = config.cached_array(f"recsyn_{scene}_{outfit}", lambda: SA.lit(N, scene), sub="synth32", f32=True)
             return {"neutral": N, "ref": G, "ref_raw": G, "neutral_path": None, "drawing": "lyn_R"}
         if kind == "small":
             h = int(rest)

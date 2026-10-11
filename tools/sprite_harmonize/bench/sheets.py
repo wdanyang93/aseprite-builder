@@ -71,6 +71,56 @@ def case_sheet(cn, method_names, lstar=False, max_frames=13):
     return p
 
 
+def _edge_boxes(F, labels, light_deg, half=110):
+    """Crop boxes around the sun-facing edge: per limb part (arm_front, tail, legs) when labelled, else the silhouette
+    point furthest toward the light."""
+    from . import parts as PARTS
+    d, nx, ny = MX.edge_geometry(F[..., 3])
+    u = MX.unit(light_deg)
+    sun = (F[..., 3] > 0.5) & (d <= 4) & (nx * u[0] + ny * u[1] > 0.4)
+    H, W = F.shape[:2]
+    boxes = []
+    def box(cy, cx, name):
+        return (name, (max(0, cy - half), min(H, cy + half), max(0, cx - half), min(W, cx + half)))
+    if labels is not None:
+        for pn in ("arm_front", "tail", "legs"):
+            m = sun & (labels == PARTS.NAMES.index(pn) + 1)
+            if m.sum() >= 30:
+                ys, xs = np.nonzero(m)
+                boxes.append(box(int(np.median(ys)), int(np.median(xs)), pn))
+    if not boxes and sun.any():
+        ys, xs = np.nonzero(sun)
+        k = np.argmax(xs * u[0] + ys * u[1])
+        boxes.append(box(int(ys[k]), int(xs[k]), "toward light"))
+    return boxes
+
+
+def crop_sheet(cn, method_names, frame_index=0, S=2):
+    """2x crops of the sun-side edge (colour row + L* row per box) for one frame of a case."""
+    c = CS.get(cn)
+    fr = c.frames[frame_index]
+    F = fr.img()
+    imgs = [("input", F), ("truth", fr.truth() if fr.has_truth else None)]
+    for m in method_names:
+        p = RUN.out_path(c.fit_id, fr.name, m)
+        if os.path.exists(p):
+            with np.load(p) as z:
+                imgs.append((m, z["x"].astype(np.float32)))
+    rows = []
+    for name, (y0, y1, x0, x1) in _edge_boxes(F, fr.labels(), fr.light_deg or 40.0):
+        for lstar in (False, True):
+            cells = [_tile(x, (y0, y1, x0, x1), (y1 - y0) * S, f"{name}: {t}{' L*' if lstar else ''}", lstar)
+                     for t, x in imgs]
+            rows.append(np.concatenate([np.pad(x, ((0, 0), (0, 4), (0, 0)), constant_values=30) for x in cells], 1))
+    if not rows:
+        return None
+    W = max(r.shape[1] for r in rows)
+    rows = [np.pad(r, ((0, 4), (0, W - r.shape[1]), (0, 0)), constant_values=30) for r in rows]
+    p = os.path.join(config.out_dir("sheets"), f"{cn}_crops.png")
+    Image.fromarray(np.concatenate(rows, 0)).save(p)
+    return p
+
+
 def write_all(case_names, method_names, log=print):
     out = []
     for cn in case_names:
@@ -78,6 +128,8 @@ def write_all(case_names, method_names, log=print):
             out.append(case_sheet(cn, method_names))
             if CS.get(cn).group in ("real", "frames"):
                 out.append(case_sheet(cn, method_names, lstar=True))
+            if CS.get(cn).group in ("real", "frames", "recolour") and CS.get(cn).frames[0].has_truth:
+                out.append(crop_sheet(cn, method_names))
         except Exception as e:
             log(f"  sheet {cn}: ERROR {e.__class__.__name__}: {e}")
     return out

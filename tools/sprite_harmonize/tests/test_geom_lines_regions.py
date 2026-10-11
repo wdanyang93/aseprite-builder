@@ -97,7 +97,8 @@ def downscale(f, t, h):
     pm = cv2.resize(np.dstack([f[..., :3] * f[..., 3:4], f[..., 3:4]]), sz, interpolation=cv2.INTER_AREA)
     al = np.clip(pm[..., 3], 0, 1)
     rgb = np.clip(pm[..., :3] / np.maximum(al[..., None], 1e-4), 0, 1)
-    tt = cv2.resize(t * f[..., 3], sz, interpolation=cv2.INTER_AREA) / np.maximum(cv2.resize(f[..., 3], sz, interpolation=cv2.INTER_AREA), 1e-4)
+    area = lambda x: cv2.resize(x, sz, interpolation=cv2.INTER_AREA)
+    tt = area(t * f[..., 3]) / np.maximum(area(f[..., 3]), 1e-4)
     return np.dstack([rgb, al]).astype(np.float32), np.clip(tt, 0, 1)
 
 

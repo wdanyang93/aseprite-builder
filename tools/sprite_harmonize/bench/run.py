@@ -182,6 +182,7 @@ def run(case_names, method_names, jobs=2, fresh=False, refit=False, log=print):
     t0 = time.time()
     # failed fits are retried every run (a real failure fails again fast; a transient one is not kept)
     todo = [(f, m, True) for f, m in fits if refit or not os.path.exists(MT.model_path(f, m)) or MT.cached_error(f, m)]
+    todo.sort(key=lambda j: (j[1] != "tool_profile", j[1] != "tool_pack"))   # tool_pack reuses tool_profile's fit_scene
     log(f"[bench] {len(case_names)} cases, {len(fits)} fits ({len(todo)} to compute), {len(units)} frame units, jobs={jobs}")
     fit_log = {}
     if todo:
@@ -226,6 +227,9 @@ def aggregate(rows, case_order, method_order):
                 a[k] = float(np.mean(v)) if v and all(np.isfinite(v)) else (float("nan") if v else None)
                 if v and not all(np.isfinite(v)):
                     a.setdefault("nan_cols", []).append(k)
+            mk = _mask_key(cn)
+            v = [r["region_dE"][mk] for r in ok if mk and mk in r.get("region_dE", {})]
+            a["mask_dE"] = float(np.mean(v)) if v else None
             a["alpha_same"] = all(r.get("alpha_same", False) for r in ok) if ok else None
             a["lit_lines"] = int(sum(r.get("lit_lines", 0) for r in ok))
             a["n_line"] = int(sum(r.get("n_line", 0) for r in ok))
@@ -239,10 +243,20 @@ def aggregate(rows, case_order, method_order):
     return agg
 
 
+def _mask_key(cn):
+    """Recolour cases: the R_audit mask of the recoloured material (its median low-pass dE is the T5 number)."""
+    c = CS.get(cn)
+    if c.group != "recolour":
+        return None
+    name = c.frames[0].name
+    mk = CS.RECOLOURS[name][0] if name in CS.RECOLOURS else "wcloth"
+    return {"skin_all": "skin"}.get(mk, mk)
+
+
 def fmt_table(agg):
-    hdr = ("case", "method", "n", "dEa", "dEst", "rL", "sun", "shd", "con", "(ref)", "det", "lnC", "hp", "a=", "lit",
-           "NaN", "fit s", "app s", "note")
-    w = (22, 12, 5, 6, 6, 5, 6, 6, 6, 6, 5, 5, 5, 3, 6, 4, 6, 6, 0)
+    hdr = ("case", "method", "n", "dEa", "dEst", "rL", "sun", "shd", "con", "(ref)", "det", "lnC", "hp", "mskdE", "a=",
+           "lit", "NaN", "fit s", "app s", "note")
+    w = (22, 12, 5, 6, 6, 5, 6, 6, 6, 6, 5, 5, 5, 6, 3, 6, 4, 6, 6, 0)
     f = lambda v, d=2: "-" if v is None else ("nan!" if isinstance(v, float) and not np.isfinite(v) else f"{v:.{d}f}")
     lines = [" ".join(h.ljust(x) if x else h for h, x in zip(hdr, w))]
     lines.append("-" * 150)
@@ -253,6 +267,7 @@ def fmt_table(agg):
         last = a["group"]
         cells = (a["case"][:22], a["method"], f"{a['n']}/{a['n_frames']}", f(a["dEa"]), f(a["dEst"]), f(a["rL"]),
                  f(a["sun"]), f(a["shd"]), f(a["con"], 1), f(a["con_ref"], 1), f(a["det"]), f(a["lnC"]), f(a["hp"]),
+                 f(a.get("mask_dE")),
                  "-" if a["alpha_same"] is None else ("y" if a["alpha_same"] else "NO"),
                  str(a["lit_lines"]), str(len(a["nan"])) if a["nan"] else "0",
                  f(a["t_fit"], 0), f(a["t_apply"], 1), a["note"][:70])

@@ -72,13 +72,30 @@ def from_state(s, mod):
 
 
 # ------------------------------------------------------------------ current tool
+def tool_fit(pair):
+    """scenelight.fit_scene on the pair, shared by both tool paths (cached by the pair's pixel content)."""
+    import hashlib
+    import json
+    h = hashlib.sha1(np.ascontiguousarray(pair["neutral"]).tobytes() + np.ascontiguousarray(pair["ref_raw"]).tobytes())
+    p = os.path.join(config.cache_dir("toolfit"), h.hexdigest()[:16] + ".json")
+    if os.path.exists(p):
+        with open(p) as f:
+            return json.load(f)
+    from scenelight import fit_scene
+    prof, pairs = fit_scene(pair["neutral"], pair["ref_raw"])
+    r = {"prof": prof, "align_iou": float(pairs.iou)}
+    tmp = p + f".{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(r, f)
+    os.replace(tmp, p)
+    return r
+
+
 class ToolProfile(Method):
     name, version = "tool_profile", "1"
 
     def fit(self, pair):
-        from scenelight import fit_scene
-        prof, pairs = fit_scene(pair["neutral"], pair["ref_raw"])
-        return {"prof": prof, "align_iou": pairs.iou}
+        return tool_fit(pair)
 
     def apply(self, model, F, frame=None):
         from scenelight import relight
@@ -97,13 +114,13 @@ class ToolPack(Method):
 
     def fit(self, pair):
         import hashlib
-        from scenelight import fit_scene, transfer
-        prof, pairs = fit_scene(pair["neutral"], pair["ref_raw"])
-        pk = transfer.build_pack(pair["neutral"], pair["ref_raw"], prof)
+        from scenelight import transfer
+        tf = tool_fit(pair)
+        pk = transfer.build_pack(pair["neutral"], pair["ref_raw"], tf["prof"])
         h = hashlib.sha1(np.ascontiguousarray(pair["neutral"]).tobytes() + np.ascontiguousarray(pair["ref_raw"]).tobytes())
         d = config.cache_dir("packs", h.hexdigest()[:16])        # saved and re-loaded exactly like `fit --pack` + `apply`
         transfer.save_pack(d, pk)
-        return {"prof": prof, "pack_dir": d, "align_iou": pairs.iou, "pack_align_iou": float(pk["align_iou"])}
+        return {"prof": tf["prof"], "pack_dir": d, "align_iou": tf["align_iou"], "pack_align_iou": float(pk["align_iou"])}
 
     def apply(self, model, F, frame=None):
         from scenelight import transfer

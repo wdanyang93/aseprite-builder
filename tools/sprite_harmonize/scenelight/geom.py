@@ -12,6 +12,8 @@ sphere's normals exactly; on a limb the cylinder's. In the middle of a limb the 
 2D part shrinks smoothly to 0 (= facing the viewer), so there is no seam on the medial axis and no fan streaks (the
 distance-transform-gradient normals had both: full-length normals flipping on the axis, rays from every corner).
 """
+import warnings
+
 import numpy as np
 import cv2
 import scipy.sparse as sp
@@ -21,15 +23,19 @@ from scipy.ndimage import distance_transform_edt
 GEOM = {
     "edge_sig": 0.001,     # alpha smoothing for the contour normals (fraction of H, at least 0.6 px)
     "coarse_h": 200,       # figure height (px) of the exact sparse harmonic solve; finer levels relax from it
-    "sor_iters": 20,       # relaxation sweeps per finer level
+    "sor_iters": 20,       # relaxation sweeps per finer level ...
+    "sor_iters_full": 8,   # ... and at the frame's own resolution (the coarser levels did the large-scale work)
     "sor_omega": 1.6,
     "band": 0.03,          # arc index for pixels with depth <= band (and the outer anti-aliased ring)
     "arc_tau": 0.35,       # soft nearest contour point: distance tolerance = arc_tau x depth (at least 0.75 px)
     "arc_win": 1.2,        # ... over +-(arc_win x depth + 2) contour points around the nearest one
     "arc_samples": 12,     # at most this many samples per side of that window
     "thin_max": 0.035,     # thin part: local width below this (soft over +-15 %)
-    "width_step": 1.12,    # geometric step of the local-width levels
+    "width_rad": 6,        # local width: maximal-disc test over this neighbourhood (px; a discretization constant)
+    "width_kappa": 0.98,   # ... a disc nearly inside a neighbour's (depth gain >= kappa x step) is not a centre
+    "width_tol": 0.5,      # ... a disc covers the pixel centres within depth + this (px)
     "ring_alpha": 0.02,    # outer anti-aliased ring = alpha above this outside the 0.5 contour
+    "hole_max": 0.0002,    # transparent holes inside the silhouette smaller than this x H^2 are filled for geometry
 }
 
 
@@ -62,13 +68,24 @@ def _edt(mask):
 
 
 def signed_depth(alpha):
-    """Distance to the alpha = 0.5 contour in px: positive inside, negative outside. The first ring on either side uses
-    the pixel's own alpha (sub-pixel position of the anti-aliased edge)."""
+    """Distance to the alpha = 0.5 contour in px: positive inside, negative outside, sub-pixel. The integer distance to
+    the nearest pixel across the contour is shifted by the coverage of the two pixels that straddle it there (outside
+    pixel alpha a_o <= 0.5, inside pixel alpha a_i > 0.5): the contour lies a_o + a_i - 1 px beyond the half-way point
+    between their centres (an anti-aliased edge pixel tells how far into it the edge reaches); a partly covered pixel
+    on either side of the contour takes its own alpha - 0.5."""
     a = alpha.astype(np.float32)
     m = a > 0.5
-    din, dout = _edt(m), _edt(~m)
-    d = np.where(m, din - 0.5, -(dout - 0.5))
-    ring = (m & (din <= 1.0)) | (~m & (dout <= 1.0))
+    if m.all() or not m.any():
+        big = np.float32(1e6)
+        return np.full(a.shape, big if m.all() else -big, np.float32)
+    din, (oy, ox) = distance_transform_edt(m, return_indices=True)       # nearest outside pixel o
+    dout, (iy, ix) = distance_transform_edt(~m, return_indices=True)     # nearest inside pixel i
+    # the pixel pair straddling the contour: (o, nearest inside pixel to o) and (nearest outside pixel to i, i)
+    sh_in = a[oy, ox] + a[iy[oy, ox], ix[oy, ox]] - 1
+    sh_out = a[oy[iy, ix], ox[iy, ix]] + a[iy, ix] - 1
+    d = np.where(m, din - 0.5 + np.clip(sh_in, -0.5, 0.5), -(dout - 0.5) + np.clip(sh_out, -0.5, 0.5))
+    # a partly covered pixel next to the contour: its own coverage places it directly
+    ring = ((m & (din <= 1.0)) | (~m & (dout <= 1.0))) & (a > 0.0) & (a < 1.0)
     return np.where(ring, a - 0.5, d).astype(np.float32)
 
 
@@ -155,8 +172,7 @@ def lumo_normals(alpha, H=None, p=None):
     levels = [1.0]
     while H * levels[-1] / 2 >= p["coarse_h"] and min(a.shape) * levels[-1] / 2 >= 8:
         levels.append(levels[-1] / 2)
-    V = None
-    prev_shape = None
+    V, prev_m = None, None
     for q in reversed(levels):
         if q < 1.0:
             al = cv2.resize(a, (max(4, int(round(a.shape[1] * q))), max(4, int(round(a.shape[0] * q)))),
@@ -176,8 +192,8 @@ def lumo_normals(alpha, H=None, p=None):
             up = cv2.resize(_fill_outside(V, prev_m).astype(np.float32), (al.shape[1], al.shape[0]),
                             interpolation=cv2.INTER_LINEAR).astype(np.float64)
             up[fixed] = nc[fixed]
-            V = _relax(m, fixed, up, p["sor_iters"], p["sor_omega"])
-        prev_m, prev_shape = m, al.shape
+            V = _relax(m, fixed, up, p["sor_iters_full"] if q == 1.0 else p["sor_iters"], p["sor_omega"])
+        prev_m = m
     m = a > 0.5
     nc = contour_normals(a, H, p)
     V = np.where(m[..., None], V, nc).astype(np.float32)
@@ -258,27 +274,43 @@ def arc_index(mask, depth, H, alpha=None, p=None):
 
 
 # ------------------------------------------------------------------ local width / thin parts
-def local_width(mask, depth, p=None):
-    """Local width in px: diameter of the largest disc inside the silhouette that covers the pixel (the medial axis'
-    depth propagated over its inscribed disc), from openings of the silhouette by discs of geometric radii."""
+def _ridge(mask, depth, p):
+    """Pixels whose inscribed disc is NOT (nearly) inside a neighbour's: no pixel q within width_rad px has
+    depth(q) - depth(c) >= width_kappa x |q - c| (then disc(c) lies inside disc(q) up to (1 - kappa) |q - c|).
+    These are the centres of the maximal discs (medial axis) plus a few extra pixels; a wide neighbourhood makes the
+    test sharp, so the discs that are dropped are covered by the kept ones to within a small fraction of a px."""
+    rad = int(p["width_rad"])
+    D = np.where(mask, depth, -1e6).astype(np.float32)
+    Dp = np.pad(D, rad, constant_values=-1e6)
+    h, w = D.shape
+    keep = mask.copy()
+    for dy in range(-rad, rad + 1):
+        for dx in range(-rad, rad + 1):
+            if (dy == 0 and dx == 0) or dy * dy + dx * dx > rad * rad + rad:
+                continue
+            q = Dp[rad + dy:rad + dy + h, rad + dx:rad + dx + w]
+            keep &= (q - D) < p["width_kappa"] * np.hypot(dy, dx)
+    return keep
+
+
+def local_width(mask, depth, H=None, p=None):
+    """Local width in px: diameter 2 x depth(c) of the largest disc inside the silhouette that covers the pixel (the
+    medial axis' depth propagated over its inscribed discs). Every maximal-disc centre (_ridge) paints its disc
+    (radius depth + width_tol px, the pixel-centre tolerance) with its width, smallest first, so each pixel ends with
+    the largest disc covering it - the same value on the medial axis and at the part's edge (no axis seam, no
+    radius quantization). Pixels covered by no larger disc keep 2 x depth (at least 0.5 px)."""
     p = dict(GEOM, **(p or {}))
-    width = np.where(mask, 2 * np.clip(depth, 0.25, None), 0).astype(np.float32)
-    dmax = float(depth[mask].max()) if mask.any() else 0.0
-    r = 0.5
-    while r <= dmax:
-        E = mask & (depth >= r)
-        ys, xs = np.nonzero(E)
-        if not len(ys):
-            break
-        m = int(np.ceil(r)) + 2
-        y0, y1 = max(0, ys.min() - m), min(mask.shape[0], ys.max() + m + 1)
-        x0, x1 = max(0, xs.min() - m), min(mask.shape[1], xs.max() + m + 1)
-        dE = _edt(~E[y0:y1, x0:x1])
-        cov = mask[y0:y1, x0:x1] & (dE <= r)
-        sub = width[y0:y1, x0:x1]
-        sub[cov] = np.maximum(sub[cov], 2 * r)
-        r *= p["width_step"]
-    return width
+    base = np.where(mask, 2 * np.clip(depth, 0.25, None), 0).astype(np.float32)
+    if not mask.any():
+        return base
+    ys, xs = np.nonzero(_ridge(mask, depth, p))
+    D = depth[ys, xs].astype(np.float64)
+    o = np.argsort(D, kind="stable")
+    can = np.zeros(mask.shape, np.float32)
+    tol = p["width_tol"]
+    for y, x, d in zip(ys[o].tolist(), xs[o].tolist(), D[o].tolist()):
+        cv2.circle(can, (x * 16, y * 16), int(round((d + tol) * 16)), 2.0 * d, -1, cv2.LINE_8, 4)
+    return np.where(mask, np.maximum(can, base), 0).astype(np.float32)
 
 
 def thin_map(width_h, p=None):
@@ -289,17 +321,39 @@ def thin_map(width_h, p=None):
 
 
 # ------------------------------------------------------------------ everything for one frame
+def fill_small_holes(alpha, H, p=None):
+    """Alpha with tiny transparent holes inside the silhouette (smaller than hole_max x H^2: gaps between hair strands,
+    a pin-hole at the chin) set to 1, for geometry only - otherwise every such hole is a contour with its own rim band
+    and a ring of normals around it. The frame's own alpha is never changed."""
+    p = dict(GEOM, **(p or {}))
+    m = alpha > 0.5
+    n, cc, st, _ = cv2.connectedComponentsWithStats((~m).astype(np.uint8), connectivity=4)
+    if n <= 2:
+        return alpha
+    h, w = m.shape
+    touch = np.zeros(n, bool)
+    touch[np.unique(np.concatenate([cc[0], cc[-1], cc[:, 0], cc[:, -1]]))] = True
+    small = (st[:, 4] < p["hole_max"] * H * H) & ~touch
+    small[0] = False                                  # label 0 = the silhouette itself
+    if not small.any():
+        return alpha
+    return np.where(small[cc], 1.0, alpha).astype(np.float32)
+
+
 def analyze(alpha, p=None, arc=True):
     """Geometry of one frame from its alpha (HxW, 0..1). Returns a dict of full-frame maps:
     H (px), mask (alpha > 0.5), depth_px / depth (signed, fraction of H), n (HxWx3 normals), angle (deg),
     arc (fractional global contour index near the silhouette, NaN elsewhere) and contour (structure),
     width_px / width (local width), thin (soft thin-part weight). Outer anti-aliased ring pixels take the width of
-    the nearest silhouette pixel."""
+    the nearest silhouette pixel. The image border counts as transparent: a figure cut by the border (or a tightly
+    cropped sprite) gets its silhouette there, the same for depth, normals and width (a warning is given when the
+    frame has no transparent pixel at all). Non-finite alpha raises ValueError."""
     p = dict(GEOM, **(p or {}))
     alpha = np.asarray(alpha, np.float32)
-    Hfull, Wfull = alpha.shape
+    if not np.isfinite(alpha).all():
+        raise ValueError("alpha contains NaN or inf values")
     H = figure_height(alpha)
-    out = {"H": H, "mask": alpha > 0.5}
+    out = {"H": H, "mask": alpha > 0.5}             # the frame's own silhouette (holes not filled)
     box = crop_box(alpha, 4)
     if H <= 0 or box is None:
         z = np.zeros(alpha.shape, np.float32)
@@ -307,19 +361,23 @@ def analyze(alpha, p=None, arc=True):
                    arc=np.full(alpha.shape, np.nan, np.float32), contour=contours(out["mask"]), width_px=z, width=z,
                    thin=z)
         return out
-    a = alpha[box]
+    if out["mask"].all():
+        warnings.warn("geom.analyze: the frame has no transparent pixel; the image border is taken as the silhouette")
+    P = 4                                            # transparent margin: the image border is a silhouette edge
+    a = fill_small_holes(np.pad(alpha[box], P), H, p)
     m = a > 0.5
     d = signed_depth(a)
     n = lumo_normals(a, H, p)
-    w = local_width(m, d, p)
+    w = local_width(m, d, H, p)
     ring = ~m & (a > p["ring_alpha"])
     if ring.any() and m.any():
         _, (iy, ix) = distance_transform_edt(~m, return_indices=True)
         w = np.where(ring, w[iy, ix], w)
+    inner = (slice(P, -P), slice(P, -P))
 
     def full(x, fill):
         f = np.full(alpha.shape + x.shape[2:], fill, x.dtype)
-        f[box] = x
+        f[box] = x[inner]
         return f
     d_full = full(d, np.float32(-1e3))
     # far outside the crop the depth is only "far": recompute exactly there is not needed by any consumer
@@ -329,11 +387,11 @@ def analyze(alpha, p=None, arc=True):
     out["thin"] = np.where(out["mask"] | full(ring, False), thin_map(out["width"], p), 0).astype(np.float32)
     if arc:
         ac, C = arc_index(m, d, H, a, p)
-        y0, x0 = box[0].start, box[1].start
+        y0, x0 = box[0].start - P, box[1].start - P
         C = dict(C)
         C["pts"] = C["pts"] + np.array([x0, y0])
         gi = -np.ones(alpha.shape, np.int64)
-        gi[box] = C["gi"]
+        gi[box] = C["gi"][inner]
         C["gi"] = gi
         out["arc"], out["contour"] = full(ac, np.float32(np.nan)), C
     return out

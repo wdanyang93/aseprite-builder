@@ -104,9 +104,9 @@ def _regions(lab_in, mask, k=6, seed=0):
         return out
     f = np.stack([lab_in[..., 0], 1.5 * lab_in[..., 1], 1.5 * lab_in[..., 2]], -1)[mask]
     rng = np.random.default_rng(seed)
-    sub = f[rng.choice(len(f), min(len(f), 20000), replace=False)]
+    sub = f[rng.choice(len(f), min(len(f), 12000), replace=False)]
     k = min(k, len(np.unique(np.round(sub, 1), axis=0)))     # flat dolls have fewer colours than k
-    km = KMeans(k, n_init=3, random_state=seed).fit(sub)
+    km = KMeans(k, n_init=2, random_state=seed).fit(sub)
     out[mask] = km.predict(f)
     return out
 
@@ -265,16 +265,21 @@ def score(out, truth, inp, light_deg=None, labels=None, Hf_ref=REF_H, sigma_frac
         ys, xs = np.nonzero(af)
         c = max(4, int(0.12 * Hf))
         min_px = max(30, int(400 * (Hf / REF_H) ** 2))
+        mg = int(np.ceil(4 * sg)) + 2           # the masked low-pass of a cell only sees the cell: crop with a kernel margin
+        H_, W_ = af.shape
         for yy in range(ys.min(), ys.max() + 1, c):
             for xx in range(xs.min(), xs.max() + 1, c):
-                cell = np.zeros(af.shape, bool)
-                cell[yy:yy + c, xx:xx + c] = True
-                for r_ in np.unique(reg[cell & (reg >= 0)]):
-                    regm = cell & (reg == r_)
-                    mm = regm & rel
+                y0, y1_, x0, x1_ = max(yy - mg, 0), min(yy + c + mg, H_), max(xx - mg, 0), min(xx + c + mg, W_)
+                cell = np.zeros((y1_ - y0, x1_ - x0), bool)
+                cell[yy - y0:yy - y0 + c, xx - x0:xx - x0 + c] = True
+                rc, relc = reg[y0:y1_, x0:x1_], rel[y0:y1_, x0:x1_]
+                for r_ in np.unique(rc[cell & (rc >= 0)]):
+                    regm = cell & (rc == r_)
+                    mm = regm & relc
                     if mm.sum() < min_px:
                         continue
-                    x1, y1 = lowpass(lo[..., 0], regm, sg)[mm], lowpass(lt[..., 0], regm, sg)[mm]
+                    x1 = lowpass(lo[y0:y1_, x0:x1_, 0], regm, sg)[mm]
+                    y1 = lowpass(lt[y0:y1_, x0:x1_, 0], regm, sg)[mm]
                     if y1.std() < 0.5 or x1.std() < 1e-3:
                         continue
                     cs.append(np.corrcoef(x1, y1)[0, 1])
