@@ -1,0 +1,36 @@
+{
+ "_comment": "Copy to paths.local.json (gitignored) and fill in. Relative data paths are resolved against 'scratch'. The bench never writes into the repo: outputs go to 'out'.",
+ "scratch": "/path/to/private/scratch",
+ "out": "/path/to/private/scratch/bench_out",
+ "data": {
+  "lyn_R_neutral": "images/3.webp",
+  "lyn_R_ref": "images/1.png",
+  "lyn_L_neutral": "dir2/in/neutral_left.png",
+  "lyn_L_ref": "dir2/in/ref_left.png",
+  "lyn_R_partlab": "lab/harness/ref_partlab.npy",
+  "P01_orig": "s598/in/P01_orig.png",
+  "P01_night_rgba": "s598/in/P01_ref_night_rgba.png",
+  "P01_night_key": "s598/in/P01_ref_night_key.png",
+  "P01_lantern_rgba": "s598/in/P01_ref_rgba.png",
+  "P01_lantern_key": "s598/in/P01_ref_key.png",
+  "P02_orig": "s598/in/P02_orig.png",
+  "P03_orig": "s598/in/P03_orig.png",
+  "turn_dir": "lab/in",
+  "lab2_frames": "lab2/frames",
+  "s1_frames": "dir2/S1_pack/frames_left",
+  "profile_R": "<tool>/scenes/forest_sunset.json",
+  "profile_L": "dir2/left/forest_sunset_left.json"
+ },
+ "protos": {
+  "R_methods": "general/R_methods",
+  "R_practice": "general/R_practice",
+  "R_audit": "general/R_audit",
+  "sunrim": "dir2/rim"
+ },
+ "sources": {
+  "R_methods": "general/R_methods",
+  "R_practice": "general/R_practice",
+  "R_audit": "general/R_audit",
+  "s598": "s598"
+ }
+}

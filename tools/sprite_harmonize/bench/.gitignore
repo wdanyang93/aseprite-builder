@@ -1,0 +1,4 @@
+# local data / output locations (absolute paths to private scratch data) - never commit
+paths.local.json
+__pycache__/
+*.pyc
