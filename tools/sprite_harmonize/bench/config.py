@@ -81,7 +81,7 @@ def cached_array(name, fn, sub="arrays"):
         except Exception:
             os.remove(p)
     x = np.asarray(fn(), np.float32)
-    tmp = p + ".tmp.npz"
+    tmp = p + f".{os.getpid()}.tmp.npz"
     np.savez_compressed(tmp, x=x.astype(np.float16) if x.ndim == 3 else x)
     os.replace(tmp, p)
     return x
@@ -96,9 +96,10 @@ def cached_json(name, fn, sub="json"):
         except Exception:
             os.remove(p)
     v = fn()
-    with open(p + ".tmp", "w") as f:
+    tmp = p + f".{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
         json.dump(v, f, default=_jdefault)
-    os.replace(p + ".tmp", p)
+    os.replace(tmp, p)
     return v
 
 
