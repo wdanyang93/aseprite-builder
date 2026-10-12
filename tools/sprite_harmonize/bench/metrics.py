@@ -80,7 +80,7 @@ def thin_lines(rgba, Hf=None):
     """Thin dark strokes: black-hat of the slightly blurred L* (closing ~0.6 % H wide, so darker areas wider than that
     are not lines), hysteresis: seed pixels >= 20 L* darker than the closed surroundings and below L* 60, grown over
     pixels >= 10 L* darker. Dark cloth / dark skin are areas, not lines; brown (L* ~50) lines are still lines.
-    (Bench-level detector; the tool's own line map is B1's lines.py.)"""
+    (Bench metric only; the tool takes its line art from Adobe: scenelight.parts.load_lines.)"""
     a = rgba[..., 3] > 0.5
     Hf = Hf or fig_h(rgba[..., 3])
     L = cv2.GaussianBlur(L_of(rgba), (0, 0), 0.6)
