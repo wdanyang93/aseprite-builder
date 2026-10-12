@@ -2,4 +2,5 @@ numpy
 opencv-python-headless
 pillow
 scipy
+cairosvg   # renders the Adobe image_vectorize SVG line art (or save a pre-rendered vector.png)
 # tests: pytest

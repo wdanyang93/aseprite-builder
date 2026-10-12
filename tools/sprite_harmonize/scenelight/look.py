@@ -141,19 +141,26 @@ def _solve(idx, wts, y, w, reg, rhs):
     return np.linalg.solve(AtA, Atb)
 
 
-def fit_look(orig_rgba, ref_rgba, parts, lines=None, align=True):
-    """Learn the look of one lit reference of the same pose. orig/ref: HxWx4 (uint8 or float 0..1, straight alpha);
-    the reference is aligned onto the original (scenelight.align2) unless align=False. -> look dict (JSON-able)."""
+def align_ref(orig_rgba, ref_rgba):
+    """The reference warped onto the original's grid (scenelight.align2) -> (float RGBA, alignment confidence HxW)."""
+    from .align2 import Pairs
     o, _ = _as_float(orig_rgba)
     r, _ = _as_float(ref_rgba)
-    conf_a = np.ones(o.shape[:2], np.float32)
+    P = Pairs(r, o, regions=False)                           # reference -> original grid
+    pm = np.dstack([r[..., :3] * r[..., 3:], r[..., 3]])      # warp premultiplied: no background in the rim
+    rw = cv2.remap(pm, P.mapx, P.mapy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    return np.dstack([rw[..., :3] / np.maximum(rw[..., 3:], 1e-4), rw[..., 3]]).astype(np.float32), P.conf
+
+
+def fit_look(orig_rgba, ref_rgba, parts, lines=None, align=True, align_conf=None):
+    """Learn the look of one lit reference of the same pose. orig/ref: HxWx4 (uint8 or float 0..1, straight alpha);
+    the reference is aligned onto the original (align_ref) unless align=False (then `align_conf`: the confidence of
+    an alignment already done with align_ref). -> look dict (JSON-able)."""
+    o, _ = _as_float(orig_rgba)
+    r, _ = _as_float(ref_rgba)
+    conf_a = np.ones(o.shape[:2], np.float32) if align_conf is None else np.asarray(align_conf, np.float32)
     if align:
-        from .align2 import Pairs
-        P = Pairs(r, o, regions=False)                       # reference -> original grid
-        pm = np.dstack([r[..., :3] * r[..., 3:], r[..., 3]])  # warp premultiplied: no background in the rim
-        rw = cv2.remap(pm, P.mapx, P.mapy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-        r = np.dstack([rw[..., :3] / np.maximum(rw[..., 3:], 1e-4), rw[..., 3]])
-        conf_a = P.conf
+        r, conf_a = align_ref(o, r)
     alpha = o[..., 3]
     H = figure_height(alpha)
     d, ang, conf = geometry(alpha)

@@ -5,8 +5,9 @@ part masks = image_select_subject bodyParts / image_select_by_prompt, line art =
     lines = load_lines("masks/frame_a/vector.svg", rgba.shape)    # HxW bool
 
 Naming: one folder per frame (or one folder and a per-frame `prefix`, e.g. prefix="a_" for a_hair.png), file stem =
-part name: hair, face, skin, neck, upper, lower, coat, dress, shoes, leftleg, rightleg, lefthand, righthand, tail,
-subject. Other names load too. Masks: 8/16-bit grey, RGB or RGBA PNGs, white = selected (an RGBA cutout: its alpha).
+part name: hair, face, skin, neck, hands, upper, lower, coat, dress, shoes, legs, leftleg, rightleg, lefthand,
+righthand, tail, subject. Other names load too. `<part>_<anything>.png` joins <part> (union): upper_shirt.png +
+upper_sleeves.png -> upper. Masks: 8/16-bit grey, RGB or RGBA PNGs, white = selected (an RGBA cutout: its alpha).
 """
 import io
 import os
@@ -17,8 +18,8 @@ from PIL import Image
 
 from .color import to_lab
 
-NAMES = ("hair", "face", "skin", "neck", "upper", "lower", "coat", "dress", "shoes", "leftleg", "rightleg",
-         "lefthand", "righthand", "tail", "subject")
+NAMES = ("hair", "face", "skin", "neck", "hands", "upper", "lower", "coat", "dress", "shoes", "legs", "leftleg",
+         "rightleg", "lefthand", "righthand", "tail", "subject")
 
 LINES = {
     "dark_L": 50.0,           # a vectorize path darker than this L* is a line candidate ...
@@ -39,16 +40,19 @@ def _read_mask(path):
 
 
 def load_parts(folder, prefix=""):
-    """{name: float32 HxW mask} for every <prefix><name>.png in `folder`. Order: NAMES order, then other names
-    alphabetically, 'subject' (the whole figure) last, so a first-claim consumer gives it only unclaimed pixels."""
+    """{name: float32 HxW mask} for every <prefix><name>.png in `folder`; <prefix><name>_<x>.png files of a NAMES part
+    join it (pixel-wise max). Order: NAMES order, then other names alphabetically, 'subject' (the whole figure) last,
+    so a first-claim consumer gives it only unclaimed pixels."""
     found = {}
-    for f in os.listdir(folder):
+    for f in sorted(os.listdir(folder)):
         stem, ext = os.path.splitext(f)
         if ext.lower() == ".png" and stem.startswith(prefix) and len(stem) > len(prefix):
-            found[stem[len(prefix):].lower()] = os.path.join(folder, f)
+            name = stem[len(prefix):].lower()
+            group = name.split("_", 1)[0]
+            found.setdefault(group if group in NAMES and group != name else name, []).append(os.path.join(folder, f))
     order = [n for n in NAMES[:-1] if n in found] + sorted(n for n in found if n not in NAMES)
     order += ["subject"] if "subject" in found else []
-    return {n: _read_mask(found[n]) for n in order}
+    return {n: np.max([_read_mask(p) for p in found[n]], 0) for n in order}
 
 
 def _render(path, shape):

@@ -6,25 +6,39 @@
   preview  relit (or neutral) sprite on a background with contact shadow and light wrap
   check    quality sheet + numbers for a scene profile (neutral | relit | reference)
 
+  blend-fit  one frame + the painter's scene picture of it (+ Adobe masks of both) -> scene blend look (JSON)
+  blend      scene blend look + frames (+ their Adobe masks)                         -> game-height frames (RGBA PNG)
+  look-fit   original + lit reference of the same pose (+ Adobe masks of the original) -> reference look (JSON)
+  look       reference look + frames / motions (+ their Adobe masks)                    -> lit frames (RGBA PNG)
+  Adobe outputs of image X.png live in <masks>/X/: <part>.png masks (scenelight.parts names) + vector.svg line art.
+
 Examples
   python relight.py fit neutral.png warm_reference.png -o scenes/forest_sunset.json --sheet check.png
   python relight.py apply scenes/forest_sunset.json frames/*.png -o out/ --view-from-name --sheet ba.png
   python relight.py preview scenes/forest_sunset.json frames/walk_03.png --bg bg.png --place 640,602,240 -o shot.png
+  python relight.py blend-fit frames/idle.png painter_scene.png --masks masks -o blend.json --sheet blend_check.png
+  python relight.py blend blend.json frames/*.png --masks masks -o out/ --sheet blend_ba.png
+  python relight.py look-fit orig.png lamp_ref.png --masks masks -o look_lamp.json --sheet look_check.png
+  python relight.py look look_lamp.json frames/*.png --masks masks -o out/ --sheet look_ba.png
 """
 import argparse
+import json
 import os
 import re
 import sys
 import time
 
 import cv2
+import numpy as np
+from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scenelight import fit_scene, load_profile, relight, save_profile  # noqa: E402
-from scenelight.color import defringe, load_rgb, load_rgba, save_rgb, save_rgba  # noqa: E402
+from scenelight.color import defringe, figure_height, load_rgb, load_rgba, save_rgb, save_rgba, to_lab  # noqa: E402
 from scenelight.composite import composite  # noqa: E402
-from scenelight import report, transfer  # noqa: E402
+from scenelight import blend as BL, look as LK, report, transfer  # noqa: E402
+from scenelight.parts import load_lines, load_parts  # noqa: E402
 from scenelight.shading import VIEWS  # noqa: E402
 
 # file-name tokens -> view hint (8-direction sprite conventions: S = facing camera)
@@ -221,6 +235,265 @@ def cmd_check(a):
     print("sheet ->", a.out)
 
 
+# ------------------------------------------------------------------ scene blend / reference look (Adobe parts + lines)
+def _adobe(root, img_path, shape, lines=True):
+    """Adobe outputs of one image, at its resolution: <root>/<image stem>/<part>.png masks (+ vector.svg or
+    vector.png, the image_vectorize line art). -> (parts, lines or None)"""
+    d = os.path.join(root, os.path.splitext(os.path.basename(img_path))[0])
+    if not os.path.isdir(d):
+        raise FileNotFoundError(f"no Adobe mask folder {d} - do the Adobe steps for this image first")
+    h, w = shape[:2]
+    parts = {k: v if v.shape == (h, w) else cv2.resize(v, (w, h), interpolation=cv2.INTER_LINEAR)
+             for k, v in load_parts(d).items() if k != "vector"}
+    if not lines:
+        return parts, None
+    vec = [os.path.join(d, f) for f in ("vector.svg", "vector.png") if os.path.isfile(os.path.join(d, f))]
+    if not vec:
+        raise FileNotFoundError(f"no line art {os.path.join(d, 'vector.svg')} (Adobe image_vectorize): "
+                                "without it line art could get lighter")
+    return parts, load_lines(vec[0], shape).astype(np.float32)
+
+
+def _first_claim(parts):
+    """Overlapping masks made disjoint in load order (shoes before legs ...); 'subject' dropped (blend averages
+    overlaps, look lets the first claim win: both then see the same parts)."""
+    out, claimed = {}, None
+    for k, m in parts.items():
+        if k == "subject":
+            continue
+        out[k] = m if claimed is None else m * ~claimed
+        claimed = (m >= 0.5) if claimed is None else claimed | (m >= 0.5)
+    return out
+
+
+def _with_rest(parts, fig, names):
+    """`parts` limited to `names` + 'rest' = the figure pixels none of them covers (in Lyn's case the clothes): no Adobe
+    call needed for it, and frame and scene split the figure the same way."""
+    out = {k: parts[k] for k in names if k in parts}
+    u = np.zeros(fig.shape, bool)
+    for m in out.values():
+        u |= m >= 0.5
+    out["rest"] = (fig & ~u).astype(np.float32)
+    return out
+
+
+def _coverage(parts, alpha, names):
+    """share of the figure covered by the parts the look knows (the rest takes the whole-figure curve)."""
+    fig = alpha >= 0.5
+    u = np.zeros(fig.shape, bool)
+    for k in names:
+        if k in parts:
+            u |= parts[k] >= 0.5
+    return float((u & fig).sum()) / max(int(fig.sum()), 1)
+
+
+def _u8(path):
+    return np.asarray(Image.open(path).convert("RGBA"))
+
+
+def _need_alpha(x, path):
+    if _f32(x)[..., 3].min() >= 1.0:
+        raise SystemExit(f"{path} has no transparent background: cut it out with Adobe image_remove_background first")
+
+
+def _f32(x):
+    return x.astype(np.float32) / 255.0 if x.dtype == np.uint8 else x.astype(np.float32)
+
+
+def _outputs(a):
+    multi = len(a.frames) > 1 or os.path.isdir(a.out) or a.out.endswith(os.sep)
+    if multi:
+        os.makedirs(a.out, exist_ok=True)
+    return [(p, os.path.join(a.out, os.path.splitext(os.path.basename(p))[0] + ".png") if multi else a.out)
+            for p in a.frames]
+
+
+def _panels(tiles, path, h=720):
+    """Check sheet, one row at `h` rows: each (rgb, figure mask) tile cropped to its figure, then the top 30 % of each
+    figure (head / hair: outline and colour; small images are enlarged with visible pixels)."""
+    row = []
+    for frac in (1.0, 0.3):
+        for rgb, m in tiles:
+            ys = np.nonzero(m.any(1))[0]
+            y0 = ys.min()
+            y1 = y0 + max(2, int((ys.max() + 1 - y0) * frac))
+            xs = np.nonzero(m[y0:y1].any(0))[0]
+            p = max(2, int(0.04 * (y1 - y0)))
+            c = rgb[max(0, y0 - p):y1 + p, max(0, xs.min() - p):xs.max() + p + 1]
+            s = h / c.shape[0]
+            row += [cv2.resize(c, (max(1, int(c.shape[1] * s)), h),
+                               interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_NEAREST),
+                    np.full((h, 8, 3), 0.1, np.float32)]
+    Image.fromarray((np.clip(np.hstack(row), 0, 1) * 255 + 0.5).astype(np.uint8)).save(path)
+
+
+def _rgba_tile(x):
+    x = _f32(x)
+    return report.on_grey(x), x[..., 3] >= 0.5
+
+
+def cmd_blend_fit(a):
+    f = load_rgba(a.frame)
+    _need_alpha(f, a.frame)
+    parts, lines = _adobe(a.masks, a.frame, f.shape)
+    tgt = load_rgb(a.scene)
+    tparts, _ = _adobe(a.masks, a.scene, tgt.shape, lines=False)
+    tsil = np.zeros(tgt.shape[:2], bool)
+    for m in tparts.values():                  # subject + every part: Adobe's subject alone can miss e.g. the tail
+        tsil |= m >= 0.5
+    if not tsil.any():
+        raise SystemExit(f"no figure in the scene masks of {a.scene} (save subject.png and the part masks)")
+    parts, tparts = _first_claim(parts), _first_claim(tparts)
+    named = [k for k in parts if k in tparts]
+    one = sorted(set(parts) ^ set(tparts))
+    if one:
+        print("  only in one picture's masks (counted as rest there):", ", ".join(one))
+    parts, tparts = _with_rest(parts, f[..., 3] >= 0.5, named), _with_rest(tparts, tsil, named)
+    height = a.height or int(round(f.shape[0] * figure_height(tsil) / figure_height(f[..., 3])))
+    t = time.time()
+    look = BL.fit_blend(f, parts, tgt, tparts, height, lines=lines, target_sil=tsil)
+    look["height"], look["rows"] = height, f.shape[0]     # frames of other canvas sizes scale with the same factor
+    look["rest_of"] = named                                # 'rest' = the figure minus these parts, on every frame
+    with open(a.out, "w") as fh:
+        json.dump(look, fh)
+    out = BL.apply_blend(f, parts, look, height, lines)
+    print(f"scene blend look -> {a.out}  ({time.time() - t:.0f}s, game height {height} rows"
+          f"{'' if a.height else ', matched to the figure in the scene picture'})")
+    P = look["params"]
+    near = lambda k: cv2.dilate(tsil.astype(np.uint8), np.ones((k, k), np.uint8)) > 0
+    bg = np.median(tgt[near(11) & ~near(7)], 0) if (near(11) & ~near(7)).any() else 0.5   # scene just outside
+    sl = to_lab(out[..., :3] * out[..., 3:] + bg * (1 - out[..., 3:]))      # the blend as it shows in the scene
+    ssil, tl = out[..., 3] >= 0.5, to_lab(tgt)
+    size = out.shape[1::-1]
+    print("part        px game/scene   L* median (scene)   a* (scene)    b* (scene)    outer edge L* (scene)")
+    for k, p in look["parts"].items():
+        sm = ssil.astype(np.float32) if k == "_all" else cv2.resize(parts[k], size, interpolation=cv2.INTER_AREA)
+        tm = tsil if k == "_all" else tparts[k] >= 0.5
+        xs, sa, sb, _ = BL._stats(sl, ssil, sm, P["edge"], (50,))
+        ys, ta, tb, _ = BL._stats(tl, tsil, tm, P["edge"], (50,))
+        xr = BL._stats(sl, ssil, sm, P["edge"], (50,), rim=True)[0]
+        yr = BL._stats(tl, tsil, tm, P["edge"], (50,), rim=True)[0]
+        off = xs is None or ys is None or max(abs(xs[0] - ys[0]), abs(sa - ta), abs(sb - tb)) > 3
+        fmt = lambda v: "  -  " if v is None else f"{v[0]:5.1f}"
+        print(f"{'whole' if k == '_all' else k:10s} {p['n'][0]:7d}/{p['n'][1]:<7d}  {fmt(xs)} ({fmt(ys)})"
+              f"      {sa:5.1f} ({ta:5.1f})  {sb:5.1f} ({tb:5.1f})  {fmt(xr)} ({fmt(yr)})"
+              + ("   <- off by > 3" if off else ""))
+    miss = [k for k in parts if k not in look["parts"]]
+    if miss:
+        print("  no own curve (missing in the scene masks or too small; whole-figure curve):", ", ".join(miss))
+    print(f"named Adobe parts cover {_coverage(parts, f[..., 3], named):.0%} of the figure (the rest: 'rest')")
+    full = BL.apply_blend(f, parts, look, None, lines)     # the line hold acts at full resolution
+    held = (lines >= 0.5) & (f[..., 3] > 0)
+    dl = (to_lab(full[..., :3])[..., 0] - to_lab(f[..., :3])[..., 0])[held]
+    alpha_ok = np.array_equal(out[..., 3], BL.downscale(f, height)[..., 3])
+    print(f"alpha = plain downscale {alpha_ok}, line px lighter {int((dl > 0.5).sum())} of {int(held.sum())}")
+    if a.sheet:
+        _panels([_rgba_tile(BL.downscale(f, height)), _rgba_tile(out), (tgt, tsil)], a.sheet)
+        print("sheet (plain downscale | blend | scene) ->", a.sheet)
+
+
+def cmd_blend(a):
+    with open(a.look) as fh:
+        look = json.load(fh)
+    thumbs_in, thumbs_out, failed = [], [], 0
+    for p, dst in _outputs(a):
+        t = time.time()
+        try:
+            f = load_rgba(p)
+            parts, lines = _adobe(a.masks, p, f.shape)
+            parts = _first_claim(parts)
+            if "rest_of" in look:
+                parts = _with_rest(parts, f[..., 3] >= 0.5, look["rest_of"])
+            if a.height:
+                height = a.height
+            elif "height" in look:
+                height = int(round(f.shape[0] * look["height"] / look["rows"]))
+            else:
+                raise ValueError("the look has no game height: give --height")
+            o = BL.apply_blend(f, parts, look, height, lines)
+            save_rgba(dst, o)
+        except Exception as e:
+            failed += 1
+            print(f"{p}: FAILED ({e.__class__.__name__}: {e}) - skipped")
+            continue
+        cov = _coverage(parts, f[..., 3], [k for k in look["parts"] if k != "rest"])
+        print(f"{p} -> {dst}  {o.shape[1]}x{o.shape[0]}  named Adobe parts cover {cov:.0%} of the figure"
+              f"{'  <- under 50 %: check the masks' if cov < 0.5 else ''}  {time.time() - t:.1f}s")
+        if a.sheet:
+            thumbs_in.append(_thumb(BL.downscale(f, height))); thumbs_out.append(_thumb(o))
+    if a.sheet and thumbs_in:
+        report.before_after(thumbs_in, thumbs_out, a.sheet)
+        print("before|after sheet (plain downscale | blend) ->", a.sheet)
+    if failed:
+        print(f"{failed} frame(s) failed - see above")
+
+
+def _look_checks(src, out, lines):
+    """alpha bit-identical, Adobe line px never lighter in any channel, no new pure-white px."""
+    fig = src[..., 3] > 0
+    held = (lines >= 0.5) & fig
+    alpha_ok = np.array_equal(out[..., 3], src[..., 3])
+    lighter = int((out[..., :3][held].astype(int) > src[..., :3][held].astype(int)).any(-1).sum())
+    white = int(((out[..., :3] >= 250).all(-1) & ~(src[..., :3] >= 250).all(-1) & fig).sum())
+    ok = alpha_ok and lighter == 0 and white == 0
+    return (f"alpha identical {alpha_ok}, line px lighter {lighter} of {int(held.sum())}, new white px {white}"
+            + ("" if ok else "  <- CHECK FAILED")), ok
+
+
+def cmd_look_fit(a):
+    o, r = _u8(a.original), _u8(a.reference)
+    _need_alpha(o, a.original); _need_alpha(r, a.reference)
+    parts, lines = _adobe(a.masks, a.original, o.shape)
+    t = time.time()
+    rw, conf = LK.align_ref(o, r)                          # once: for the fit and for the self check
+    look = LK.fit_look(o, rw, parts, lines, align=False, align_conf=conf)
+    with open(a.out, "w") as fh:
+        json.dump(look, fh)
+    x = LK.apply_look(o, parts, look, lines)
+    print(f"reference look -> {a.out}  ({time.time() - t:.0f}s)  light from {look['az']:.0f} deg "
+          "(0 = screen right, 90 = top, 180 = left)")
+    valid = (rw[..., 3] > 0.5) & (conf > 0.3) & (o[..., 3] > 0) & (lines < 0.5)
+    lab_r = to_lab(np.clip(rw[..., :3], 0, 1))
+    de = lambda y: float(np.linalg.norm(to_lab(_f32(y)[..., :3]) - lab_r, axis=-1)[valid].mean()) if valid.any() else 0
+    d0, d1 = de(o), de(x)
+    lined_up = valid.mean() >= 0.5 * (o[..., 3] > 0).mean()
+    good = lined_up and d1 <= 8 and d1 <= 0.5 * d0
+    print(f"self colour error dE {d1:.2f} (unchanged {d0:.2f}; pass: <= 8 and <= half of unchanged)"
+          f"{'' if good else '  <- CHECK FAILED'}")
+    print(_look_checks(o, x, lines)[0])
+    if not lined_up:
+        print("WARNING: the reference lines up with the original on under half of the figure - same pose needed")
+    if a.sheet:
+        ref = np.dstack([rw[..., :3], _f32(o)[..., 3]])     # shown with the original's alpha
+        _panels([_rgba_tile(o), _rgba_tile(x), _rgba_tile(ref)], a.sheet)
+        print("sheet (original | look | reference aligned) ->", a.sheet)
+
+
+def cmd_look(a):
+    with open(a.look) as fh:
+        look = json.load(fh)
+    thumbs_in, thumbs_out, failed = [], [], 0
+    for p, dst in _outputs(a):
+        t = time.time()
+        try:
+            f = _u8(p)
+            parts, lines = _adobe(a.masks, p, f.shape)
+            x = LK.apply_look(f, parts, look, lines)
+            Image.fromarray(x, "RGBA").save(dst)
+        except Exception as e:
+            failed += 1
+            print(f"{p}: FAILED ({e.__class__.__name__}: {e}) - skipped")
+            continue
+        print(f"{p} -> {dst}  {_look_checks(f, x, lines)[0]}  {time.time() - t:.1f}s")
+        if a.sheet:
+            thumbs_in.append(_thumb(_f32(f))); thumbs_out.append(_thumb(_f32(x)))
+    if a.sheet and thumbs_in:
+        report.before_after(thumbs_in, thumbs_out, a.sheet)
+        print("before|after sheet ->", a.sheet)
+    if failed:
+        print(f"{failed} frame(s) failed - see above")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -273,8 +546,33 @@ def main(argv=None):
     ap.add_argument("--per-frame", action="store_true", help="pack: decide frame by frame (may flicker)")
     for sp_ in (f, ap, pv, c):
         sp_.add_argument("--no-defringe", action="store_true", help="keep semi-transparent edge colours as they are")
+
+    masks = "Adobe outputs: image X.png -> <masks>/X/<part>.png + vector.svg (default: masks)"
+    bf = sub.add_parser("blend-fit", help="scene blend: fit once on one frame + the painter's scene picture of it")
+    bf.add_argument("frame"); bf.add_argument("scene", help="the scene picture with the painted character (game scale)")
+    bf.add_argument("-o", "--out", required=True, help="scene blend look JSON")
+    bf.add_argument("--height", type=int,
+                    help="game height of the frame canvas (default: the figure as tall as in the scene picture)")
+    bf.add_argument("--sheet", help="write a check sheet PNG (plain downscale | blend | scene)")
+    bl = sub.add_parser("blend", help="scene blend: apply a blend look to frames (output at game height)")
+    bl.add_argument("look"); bl.add_argument("frames", nargs="+")
+    bl.add_argument("-o", "--out", required=True, help="output PNG (one frame) or directory")
+    bl.add_argument("--height", type=int, help="game height (default: the look's, scaled by the canvas height)")
+    bl.add_argument("--sheet", help="write a before|after contact sheet PNG")
+    lf = sub.add_parser("look-fit", help="reference look: fit on an original + its lit reference (same pose)")
+    lf.add_argument("original")
+    lf.add_argument("reference", help="lit reference of the same pose, transparent background")
+    lf.add_argument("-o", "--out", required=True, help="reference look JSON (one per light)")
+    lf.add_argument("--sheet", help="write a check sheet PNG (original | look | reference aligned)")
+    lk = sub.add_parser("look", help="reference look: apply a look to frames / motions")
+    lk.add_argument("look"); lk.add_argument("frames", nargs="+")
+    lk.add_argument("-o", "--out", required=True, help="output PNG (one frame) or directory")
+    lk.add_argument("--sheet", help="write a before|after contact sheet PNG")
+    for sp_ in (bf, bl, lf, lk):
+        sp_.add_argument("--masks", default="masks", help=masks)
     a = p.parse_args(argv)
-    {"fit": cmd_fit, "apply": cmd_apply, "preview": cmd_preview, "check": cmd_check}[a.cmd](a)
+    {"fit": cmd_fit, "apply": cmd_apply, "preview": cmd_preview, "check": cmd_check, "blend-fit": cmd_blend_fit,
+     "blend": cmd_blend, "look-fit": cmd_look_fit, "look": cmd_look}[a.cmd](a)
 
 
 if __name__ == "__main__":
