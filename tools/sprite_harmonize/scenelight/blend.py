@@ -10,8 +10,9 @@ The painter study (v10, ~1600 case-specific lines) distilled to four steps:
 4. an anti-aliased outer line ~1.3 game px inside the alpha boundary in each part's target outer-line colour
    (painter: nearly black on boots / gloves); never lighter than the input pixel, a darker one keeps its own tone.
 Parts come from Adobe (image_select_subject bodyParts / image_select_by_prompt masks), lines are the thin dark paths of
-Adobe image_vectorize; part names of sprite and target must match ('hair' gets step 2), other pixels take a
-whole-figure curve. Fit once on one frame and its target, apply to every frame of the scene:
+Adobe image_vectorize; part names of sprite and target must match ('hair' gets step 2). Parts should not overlap
+(overlaps are averaged; e.g. legs minus shoes), 'subject' (the whole figure) is ignored, figure pixels no part covers
+take a whole-figure curve. Fit once on one frame and its target, apply to every frame of the scene:
     look = fit_blend(rgba, parts, painter_rgb, painter_parts, height, lines)     # JSON-able: json.dump(look, f)
     out = apply_blend(other_rgba, other_parts, look, height, other_lines)        # float RGBA at `height` rows
 """
@@ -96,23 +97,31 @@ def _ring(rgb, sil, m, probe, cover):
     return np.round(to_lab(np.clip(line, 0, 1)[None, None])[0, 0], 2).tolist()
 
 
-def _lut(x, y):
-    """Smooth monotone L* curve through the knots (0,0), (x_i, y_i), (100,100), tabulated on 0..100 step 0.1."""
+def _lut(x, y, gap=0.5, slope=3.0):
+    """Smooth monotone L* curve through (0,0), (x_i, y_i), (100,100), tabulated on 0..100 step 0.1. Knots closer than
+    `gap` L* are merged (flat fills: no step) and the slope is capped at `slope` (no noise amplification)."""
     x = np.maximum.accumulate(np.clip(np.asarray(x, np.float64), 0.5, 99.5))
-    x = x + np.arange(len(x)) * 1e-3                    # strictly increasing for the interpolator
     y = np.maximum.accumulate(np.clip(np.asarray(y, np.float64), 0.0, 100.0))
-    f = PchipInterpolator(np.r_[0.0, x, 100.0], np.r_[0.0, y, 100.0])
-    return f(np.linspace(0, 100, 1001)).astype(np.float32)
+    g = np.r_[0, np.cumsum(np.diff(x) >= gap)]
+    n = np.bincount(g)
+    x, y = np.r_[0.0, np.bincount(g, x) / n, 100.0], np.r_[0.0, np.bincount(g, y) / n, 100.0]
+    y = np.clip(y, 100 - slope * (100 - x), slope * x)    # reachable from (0,0) and to (100,100) within the cap
+    for i in range(1, len(x)):
+        y[i] = min(y[i], y[i - 1] + slope * (x[i] - x[i - 1]))
+    return PchipInterpolator(x, y)(np.linspace(0, 100, 1001)).astype(np.float32)
 
 
 def _weights(parts, names, alpha, H, feather):
-    """Feathered part weights (sum <= 1); what is left over belongs to the whole-figure fallback."""
+    """Feathered part weights, normalised to sum 1; the whole-figure fallback '_all' only gets the figure pixels no
+    part covers (so a part's own edge is not mixed with the whole-figure curve or line)."""
     sig = max(0.5, feather * H)
-    w = {k: cv2.GaussianBlur(_mask(parts[k]), (0, 0), sig) for k in names if k in parts}
-    tot = sum(w.values()) if w else np.zeros_like(alpha)
-    s = np.maximum(tot, 1.0)
-    w = {k: v / s for k, v in w.items()}
-    w["_all"] = 1.0 - np.minimum(tot, 1.0)
+    ms = {k: _mask(parts[k]) for k in names if k in parts}
+    union = np.clip(sum(ms.values()), 0, 1) if ms else np.zeros_like(alpha)
+    ms["_all"] = (alpha >= 0.5) * (1 - union)
+    w = {k: cv2.GaussianBlur(v, (0, 0), sig) for k, v in ms.items()}
+    s = sum(w.values())
+    w = {k: v / np.maximum(s, 1e-6) for k, v in w.items()}
+    w["_all"] = np.where(s > 1e-6, w["_all"], 1.0)
     return w
 
 
@@ -167,7 +176,7 @@ def fit_blend(sprite, parts, target_rgb, target_parts, height, lines=None, targe
     tm = {k: _mask(v) >= 0.5 for k, v in target_parts.items()}
     tsil = np.any(list(tm.values()), 0) if target_sil is None else _mask(target_sil) >= 0.5
     look = {"params": {k: list(v) if isinstance(v, tuple) else v for k, v in P.items()}, "parts": {}}
-    pairs = [(k, _resize(_mask(parts[k]), size, P["filter"]), tm[k]) for k in parts if k in tm]
+    pairs = [(k, _resize(_mask(parts[k]), size, P["filter"]), tm[k]) for k in parts if k in tm and k != "subject"]
     pairs.append(("_all", ssil.astype(np.float32), tsil))
     for k, sm, tmk in pairs:
         xs, sa, sb, ns = _stats(sl, ssil, sm, P["edge"], P["q"])
@@ -219,8 +228,9 @@ def _outer_line(res, ref, w, lp, width):
 
 
 def apply_blend(sprite, parts, look, height=None, lines=None):
-    """Apply a fitted look to any frame of the scene; returns float RGBA at `height` rows (None: full resolution).
-    parts / lines at the sprite's resolution. The alpha is the input alpha (full res) or its plain downscale."""
+    """Apply a fitted look to any frame of the scene; returns float RGBA at `height` rows. parts / lines at the
+    sprite's resolution. The alpha is the plain downscale of the input alpha. height=None (full resolution) is for
+    checks only: the game-px widths (edge, fade, outer line) then count full-res px."""
     P = dict(BLEND, **look["params"])
     rgba, alpha, H, line, lab = _prep(sprite, parts, lines, P)
     lp = dict(look["parts"])

@@ -113,6 +113,25 @@ def test_nothing_depends_on_screen_position():
     assert np.abs(o1[9:, 14:] - o0[:-9, :-14]).max() <= 1
 
 
+def test_no_seams_deep_inside_a_wide_figure():
+    """a figure much deeper than 0.1 H: the normal confidence and the look fade smoothly toward the medial axis
+    (no cut-off where the facing table suddenly stops)."""
+    a = cv2.ellipse(np.zeros((600, 600), np.uint8), (300, 300), (250, 280), 0, 0, 360, 1, -1)
+    alpha = cv2.GaussianBlur(a.astype(np.float32), (0, 0), 0.7)
+    d, _, conf = LK.geometry(alpha)
+    assert d.max() > 0.3
+    fac = 0.5 * np.cos(np.arange(LK.NF) * 2 * np.pi / LK.NF)                # strong facing pattern in every band
+    nb = len(LK.D_CENTERS)
+    tab = {"dir": np.tile(fac[None, :, None], (nb, 1, 3)).tolist(),
+           "iso": np.zeros((nb, 3)).tolist(), "slope": np.zeros((nb, 3)).tolist()}
+    look = {"az": 30.0, "eps": LK.EPS, "tone": [0.0, -9.0, 9.0], "tables": {"*": tab}}
+    q = LK.log_ratio(alpha, {"upper": a > 0}, look)[..., 0]
+    m = alpha > 0.5
+    for x in (conf, q):
+        jx = np.abs(np.diff(x, axis=1))[m[:, 1:] & m[:, :-1]]
+        jy = np.abs(np.diff(x, axis=0))[m[1:] & m[:-1]]
+        assert max(jx.max(), jy.max()) < 0.1
+
 def test_lines_never_lighter():
     o, parts, look = _fit()
     lines = np.zeros(o.shape[:2], np.float32)

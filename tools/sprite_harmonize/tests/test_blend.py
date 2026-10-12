@@ -48,16 +48,19 @@ def doll(H=1000, W=600, outline=(0.55, 0.42, 0.34), seed=0):
 
 
 def painted_target(rgba, parts, line_lab=(22.0, 14.0, 18.0)):
-    """The 'painter' frame at game scale: darks lifted, lights compressed, warmer, a dark outer line; on grey."""
+    """The 'painter' frame at game scale: darks lifted, lights compressed, warmer, a dark outer line; on grey.
+    line_lab: one Lab for the whole outer line, or {part: Lab}."""
     small = BL.downscale(rgba, GAME)
     lab = to_lab(small[..., :3])
     lab[..., 0] = 18 + 0.72 * lab[..., 0]
     lab[..., 1] += 4.0
     lab[..., 2] += 9.0
     sil = small[..., 3] >= 0.5
-    lab[sil & (BL._depth(sil) <= 1.0)] = line_lab        # the outermost pixels (incl. diagonal neighbours)
-    rgb = from_lab(lab) * small[..., 3:] + 0.5 * (1 - small[..., 3:])
     tparts = {k: BL._resize(v.astype(np.float32), small.shape[1::-1], "area") >= 0.5 for k, v in parts.items()}
+    first = sil & (BL._depth(sil) <= 1.0)                  # the outermost pixels (incl. diagonal neighbours)
+    for k, c in (line_lab.items() if isinstance(line_lab, dict) else [(None, line_lab)]):
+        lab[first & (tparts[k] if k else True)] = c
+    rgb = from_lab(lab) * small[..., 3:] + 0.5 * (1 - small[..., 3:])
     return rgb, tparts, sil
 
 
@@ -141,6 +144,32 @@ def test_look_is_json_and_reapplies_identically(case):
     out2 = BL.apply_blend(case["rgba"], case["parts"], look2, GAME, lines=case["lines"])
     assert np.array_equal(out2, case["out"])
     assert set(look2["parts"]) >= {"hair", "skin", "clothes", "tail", "_all"}
+
+
+def test_each_part_edge_gets_its_own_line():
+    rgba, parts, lines = doll()                 # the parts cover the whole figure: no whole-figure mixing at edges
+    cols = {"hair": (15.0, 8.0, 10.0), "skin": (38.0, 16.0, 20.0), "clothes": (24.0, 10.0, 12.0), "tail": (31.0, 8.0, 12.0)}
+    target, tparts, tsil = painted_target(rgba, parts, line_lab=cols)
+    look = BL.fit_blend(rgba, parts, target, tparts, GAME, lines=lines, target_sil=tsil)
+    out = BL.apply_blend(rgba, parts, look, GAME, lines=lines)
+    sil = out[..., 3] >= 0.5
+    first = sil & (BL._depth(sil) <= 1.0)
+    L = to_lab(out[..., :3] * out[..., 3:] + 0.5 * (1 - out[..., 3:]))[..., 0]
+    Lt = to_lab(target)[..., 0]
+    for k in cols:
+        other = np.any([v for j, v in tparts.items() if j != k], 0)
+        m = first & tparts[k] & (cv2.distanceTransform((~other).astype(np.uint8), cv2.DIST_L2, 5) > 6)  # off borders
+        assert m.sum() > 20, k
+        assert abs(np.median(L[m]) - np.median(Lt[m])) < 2.5, k
+
+
+def test_curve_merges_flat_fills_and_caps_slope():
+    lut = BL._lut([50.0] * 8, [40, 44, 47, 50, 52, 55, 58, 62])      # a flat fill: all sprite quantiles tied
+    g = np.linspace(0, 100, 1001)
+    assert np.interp(50.0, g, lut) == pytest.approx(np.mean([40, 44, 47, 50, 52, 55, 58, 62]), abs=0.5)
+    assert np.diff(lut).max() / 0.1 <= 3.5                           # no step: slight noise is not amplified
+    lut = BL._lut([49.8, 49.9, 50.0, 50.1, 50.2, 60, 70, 80], [20, 30, 40, 50, 60, 65, 75, 85])
+    assert np.diff(lut).max() / 0.1 <= 3.5 and np.all(np.diff(lut) >= -1e-6)
 
 
 def test_other_frame_with_missing_parts_runs(case):

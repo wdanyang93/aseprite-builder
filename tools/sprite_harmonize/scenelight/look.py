@@ -2,8 +2,8 @@
 motions by each frame's own geometry (the lamp-side leg gets the light after the feet swap).
 
     from scenelight.parts import load_parts, load_lines
-    look = fit_look(orig, ref, load_parts("masks/P01"), load_lines("masks/P01/vector.svg", orig.shape))
-    out = apply_look(frame, load_parts("masks/walk_a"), look, load_lines("masks/walk_a/vector.svg", frame.shape))
+    look = fit_look(orig, ref, load_parts("masks/orig"), load_lines("masks/orig/vector.svg", orig.shape))
+    out = apply_look(frame, load_parts("masks/frame"), look, load_lines("masks/frame/vector.svg", frame.shape))
     json.dump(look, f)                          # one look per light (lamp only / moon only / moon + lantern)
 
 parts : {name: HxW mask} Adobe part masks (image_select_subject bodyParts / image_select_by_prompt), >= 0.5 = in.
@@ -34,10 +34,12 @@ D_CENTERS = np.array([1.0, 3.0, 7.0, 18.0, 50.0]) / 1405.0   # depth band centre
                       # bands 0-2, 2-4, 4-10, 10-30, 30+ px at a 1405 px figure
 NSCALES = (0.0025, 0.005, 0.01, 0.02, 0.04)  # normal field scales (fraction of H): fine at the rim, coarse inside
 EDGE_MAG = 8.0 / np.sqrt(2 * np.pi)          # sigma * Sobel response of a blurred unit step, at the step
-N0 = 1e-6             # shrinkage prior (pixels, fraction of H^2): part cell -> figure cell -> band mean
+N0 = 1e-6             # ridge prior weight (pixels, fraction of H^2): part -> whole figure, cell -> band -> mean
 FEATHER = 0.003       # part border feather (fraction of H)
 KNEE = 0.8            # linear max-channel level where the soft knee starts
 MIN_CONF = 0.2        # alignment confidence needed to fit a pixel
+TONE_RANGE = (10, 99) # base-tone percentiles the tone slope is fitted / applied within (no extrapolation into the
+                      # darkest creases: at the 1st percentile near-black browns turned blue on a transfer)
 LUM = np.array([0.2126, 0.7152, 0.0722], np.float32)
 
 
@@ -60,7 +62,7 @@ def geometry(alpha):
         gy += sig * cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)
         ref += EDGE_MAG * np.exp(-d ** 2 / (2 * sig ** 2))
     ang = np.arctan2(gy, -gx)                                # outward = -grad(alpha); y up
-    conf = np.where(ref > 0.05, np.clip(np.hypot(gx, gy) / np.maximum(ref, 1e-3), 0, 1), 0.0)
+    conf = np.clip(np.hypot(gx, gy) / np.maximum(ref, EDGE_MAG), 0, 1)   # |g| -> 0 deep inside: no cut-off seam
     return (d / H).astype(np.float32), ang.astype(np.float32), conf.astype(np.float32)
 
 
@@ -132,23 +134,11 @@ def _solve(idx, wts, y, w, reg, rhs):
     n = reg.shape[0]
     AtA, Atb = reg.copy(), rhs.copy()
     for ia, wa in zip(idx, wts):
-        for c in range(y.shape[1]):
+        for c in range(3):
             Atb[:, c] += np.bincount(ia, w * wa * y[:, c], n)
         for ib, wb in zip(idx, wts):
             AtA += np.bincount(ia * n + ib, w * wa * wb, n * n).reshape(n, n)
     return np.linalg.solve(AtA, Atb)
-
-
-def _fit_table(idx, wts, y, w, reg, rhs, na):
-    """-> (colour entries na x 3, tone slopes). The slopes are shared by the channels (tone changes how much light a
-    pixel gets, never its colour): fitted on the channel mean first, then the colour entries with the slopes fixed."""
-    import os
-    if os.environ.get("LOOK_PERCH"):
-        x = _solve(idx, wts, y, w, reg, rhs)
-        return x[:na], x[na:]
-    sl = _solve(idx, wts, y.mean(1, keepdims=True), w, reg, rhs.mean(1, keepdims=True))[na:, 0]
-    ys = y - sum(wt * sl[i - na] for i, wt in zip(idx[6:], wts[6:]))[:, None]
-    return _solve(idx[:6], wts[:6], ys, w, reg[:na, :na], rhs[:na]), sl
 
 
 def fit_look(orig_rgba, ref_rgba, parts, lines=None, align=True):
@@ -177,7 +167,7 @@ def fit_look(orig_rgba, ref_rgba, parts, lines=None, align=True):
     lab = labels(parts, alpha > 0)
     m = w > 0
     tone = np.log(lin_o[m] @ LUM + EPS)                      # base tone: darker bases gain relatively more
-    x0, lo, hi = float(np.average(tone, weights=w[m])), *np.percentile(tone, [float(__import__("os").environ.get("LOOK_LO", 1)), 99]).tolist()
+    x0, lo, hi = float(np.average(tone, weights=w[m])), *np.percentile(tone, TONE_RANGE).tolist()
     xt = np.clip(tone, lo, hi) - x0
     nb, nd, n0 = len(D_CENTERS), len(D_CENTERS) * NF, N0 * H * H
     n = nd + 2 * nb                                          # entries: facing x depth, depth, tone slope per depth
@@ -195,16 +185,15 @@ def fit_look(orig_rgba, ref_rgba, parts, lines=None, align=True):
         reg[b, b] += n0; reg[c, b] -= n0; reg[b, c] -= n0
     rhs = np.zeros((n, 3))
     rhs[nd:nd + nb] = n0 * (wm[:, None] * y).sum(0) / wm.sum()
-    tabs = {"*": _fit_table(idx, wts, y, wm, reg, rhs, nd + nb)}
-    sl0 = tabs["*"][1]
-    prior = n0 * np.vstack([tabs["*"][0], sl0 if sl0.ndim == 2 else np.repeat(sl0[:, None], 3, 1)])
+    x = _solve(idx, wts, y, wm, reg, rhs)
+    tabs = {"*": x}
     for k, name in enumerate(parts):                         # parts: pulled toward the whole-figure table
         sel = lm == k
         if sel.sum() >= 20:
-            tabs[name] = _fit_table([i[sel] for i in idx], [v[sel] for v in wts], y[sel], wm[sel], n0 * np.eye(n),
-                                    prior, nd + nb)
+            tabs[name] = _solve([i[sel] for i in idx], [v[sel] for v in wts], y[sel], wm[sel], n0 * np.eye(n), n0 * x)
     r4 = lambda v: np.round(v, 4).tolist()
-    tabs = {k: {"dir": r4(a[:nd].reshape(nb, NF, 3)), "iso": r4(a[nd:]), "slope": r4(sl)} for k, (a, sl) in tabs.items()}
+    tabs = {k: {"dir": r4(v[:nd].reshape(nb, NF, 3)), "iso": r4(v[nd:nd + nb]), "slope": r4(v[nd + nb:])}
+            for k, v in tabs.items()}
     return {"version": 1, "az": round(az, 1), "profile": np.round(prof, 3).tolist(), "eps": EPS,
             "tone": [round(x0, 4), round(lo, 4), round(hi, 4)], "d_centers": D_CENTERS.tolist(), "nf": NF,
             "tables": tabs}
@@ -250,10 +239,7 @@ def log_ratio(alpha, parts, look, lin=None):
         Sl = np.asarray(tb["slope"], np.float32)
         j0, j1, s, i0, i1, t = (c[m] for c in coords)
         idx, wts = _corners(j0, j1, s, i0, i1, t, conf[m])
-        if Sl.ndim == 2:
-            qk = ((1 - s)[:, None] * Sl[j0] + s[:, None] * Sl[j1]) * xt[m, None]
-        else:
-            qk = np.repeat(((1 - s) * Sl[j0] + s * Sl[j1]) * xt[m], 3).reshape(-1, 3)
+        qk = ((1 - s)[:, None] * Sl[j0] + s[:, None] * Sl[j1]) * xt[m, None]
         for i, wt in zip(idx, wts):
             qk += wt[:, None] * A[i]
         q[m] += wk[m, None] * qk
