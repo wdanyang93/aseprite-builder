@@ -18,6 +18,7 @@ import relight  # noqa: E402
 import test_blend as TB  # noqa: E402
 import test_look as TL  # noqa: E402
 from scenelight import blend as BL, look as LK  # noqa: E402
+from scenelight.color import to_lab  # noqa: E402
 from scenelight.parts import load_lines, load_parts  # noqa: E402
 
 
@@ -68,7 +69,7 @@ def test_blend_fit_and_blend(tmp_path, capsys, monkeypatch):
     relight.main(["blend", "blend.json", "frame.png", "other.png", "unmasked.png", "-o", "out", "--sheet", "ba.png"])
     log = capsys.readouterr().out
     assert "unmasked.png: FAILED" in log and "1 frame(s) failed" in log                 # the other frames are kept
-    assert "under 50 %" in log                                                           # sparse masks are flagged
+    assert "other.png" in log and "no mask for: clothes" in log                          # a missing part is flagged
     out = np.asarray(Image.open("out/frame.png"))
     assert out.shape[0] == look["height"] and os.path.isfile("out/other.png") and os.path.isfile("ba.png")
     f = np.asarray(Image.open("frame.png")).astype(np.float32) / 255
@@ -76,6 +77,36 @@ def test_blend_fit_and_blend(tmp_path, capsys, monkeypatch):
     lines_png = load_lines("masks/frame/vector.png", f.shape)
     api = BL.apply_blend(f, load_parts("masks/frame"), look, look["height"], lines_png)
     assert np.abs(out.astype(int) - u8(api).astype(int)).max() <= 1                     # same as the Python API
+
+
+def test_blend_scene_figure_and_rest(tmp_path, capsys, monkeypatch):
+    """Adobe's subject.png misses the tail (as on the painter picture): the scene figure is subject + every part. No
+    clothes mask on either side: the clothes are 'rest' (figure minus the named parts) and still match the scene."""
+    monkeypatch.chdir(tmp_path)
+    rgba, parts, _ = TB.doll()
+    lines = thin_lines(rgba)
+    target, tparts, tsil = TB.painted_target(rgba, parts)
+    Image.fromarray(u8(rgba)).save("frame.png")
+    Image.fromarray(u8(target)).save("scene.png")
+    hands = np.zeros(rgba.shape[:2], bool)
+    hands[600:640, 260:340] = True                                      # a part only the frame has
+    save_adobe("masks/frame", {"hair": parts["hair"], "skin": parts["skin"], "tail": parts["tail"], "hands": hands},
+               lines)
+    save_adobe("masks/scene", {"hair": tparts["hair"], "skin": tparts["skin"], "tail": tparts["tail"],
+                               "subject": tsil & ~tparts["tail"]})
+    relight.main(["blend-fit", "frame.png", "scene.png", "-o", "blend.json"])
+    log = capsys.readouterr().out
+    look = json.load(open("blend.json"))
+    assert look["rest_of"] == ["hair", "skin", "tail"] and "rest" in look["parts"]
+    assert "only in one picture's masks (counted as rest there): hands" in log
+    assert look["parts"]["tail"]["n"][1] >= 0.9 * tparts["tail"].sum()                   # the whole scene tail
+    assert "off by > 3" not in log
+    relight.main(["blend", "blend.json", "frame.png", "-o", "out.png", "--height", str(TB.GAME)])
+    assert "no mask for" not in capsys.readouterr().out
+    out = np.asarray(Image.open("out.png")).astype(np.float32) / 255                    # same grid as the scene
+    m = tparts["clothes"] & (out[..., 3] >= 0.5) & (BL._depth(tsil) > 3)
+    dl = np.median(to_lab(out[..., :3])[..., 0][m]) - np.median(to_lab(target)[..., 0][m])
+    assert abs(dl) < 3                                                                    # 'rest' took the scene clothes
 
 
 def test_first_claim_makes_parts_disjoint():
@@ -116,6 +147,20 @@ def test_look_fit_and_look(tmp_path, capsys, monkeypatch):
         held = (lines >= 0.5) & (src[..., 3] > 0)
         assert np.array_equal(out[..., 3], src[..., 3]) and not np.array_equal(out, src)
         assert not (out[..., :3][held].astype(int) > src[..., :3][held].astype(int)).any()
+
+
+def test_look_fit_fails_without_overlap(tmp_path, capsys, monkeypatch):
+    """a reference that lines up with under half of the figure can not pass the self check (dE on nothing)."""
+    monkeypatch.chdir(tmp_path)
+    o, parts, _ = TL.doll()
+    ref = TL.lit(o)
+    ref[130:, :, 3] = 0                                                                  # only the head is there
+    Image.fromarray(u8(o)).save("orig.png")
+    Image.fromarray(u8(ref)).save("lamp.png")
+    save_adobe("masks/orig", parts, np.zeros(o.shape[:2], np.float32))
+    with pytest.raises(SystemExit, match="CHECK FAILED"):
+        relight.main(["look-fit", "orig.png", "lamp.png", "-o", "look.json"])
+    assert not os.path.exists("look.json")
 
 
 def test_opaque_reference_is_refused(tmp_path, monkeypatch):

@@ -15,7 +15,7 @@ description: 2D 게임 캐릭터 스프라이트·애니메이션 프레임을 �
 **fit 을 한 번 한 뒤 프레임이 아래 검사를 통과하지 못하거나, 경우가 특별한 처리를 요구하면 (다른 옷, 다른 방향, 잘린 그림,
 안 맞는 마스크 ...) 거기서 멈춘다.** 매개변수를 만지거나 새 방법을 연구하지 않는다. 그 프레임의 빛 받은 그림 / 장면 그림을
 작가나 AI 에게 주문하고 Adobe `image_remove_background` 로 오려서 쓴다 — 연구를 더 하는 것보다 싸다.
-사용자에게는 무엇이 왜 안 됐는지 시트와 숫자로 알린다.
+사용자에게는 무엇이 왜 안 됐는지 시트와 숫자로 알린다. (마스크를 한 번 다시 받는 것까지는 해도 된다.)
 
 ## 준비
 ```bash
@@ -23,26 +23,39 @@ cd <이 스킬 폴더> && pip install -r requirements.txt     # numpy, opencv, p
 ```
 
 ## Adobe 단계 (B·C 에 필요 — 명령을 돌리기 전에 Claude 가 직접 한다)
-그림 `X.png` 의 Adobe 결과는 `masks/X/` 에 둔다: 부위 마스크 `<이름>.png` (흰색 = 선택) + 선화 `vector.svg`.
-필요한 그림: B 는 fit 프레임·장면 그림·적용할 프레임마다, C 는 원본과 적용할 프레임마다 (참고 그림은 필요 없다).
+그림 `X.png` 의 결과는 `masks/X/` 에 둔다: 부위 마스크 `<이름>.png` (흰색 = 선택) + 선화 `vector.svg`.
+받을 그림: B 는 fit 프레임·장면 그림·적용할 프레임마다, C 는 원본과 적용할 프레임마다. C 의 참고 그림은 마스크가 필요 없다
+(투명 배경이 아니면 `image_remove_background` 만).
 1. `adobe_mandatory_init` (대화에서 한 번).
-2. 올리기: `asset_initialize_file_upload` (path, file_size, media_type `image/png`) → 응답의 업로드 URL 로
-   `curl -X PUT --data-binary @X.png "<url>"` → `asset_finalize_file_upload` (filename, transfer_document) → 받은 URL 이 imageURI.
-3. 부위: `image_select_subject` 를 부위마다 한 번 (`options.bodyParts`), 결과 URL 을 `curl -o masks/X/<파일> "<url>"` 로 받는다.
+2. 올리기: 투명 배경 프레임은 같은 캔버스의 회색(#808080) 배경에 얹은 PNG 로 올린다 (검증 때 그렇게 했다).
+   `asset_initialize_file_upload` (path, file_size, media_type `image/png`) → 받은 transfer href 마다
+   `curl -L -X PUT -H "Content-Type: image/png" --data-binary @X.png "<href>"` (기본 block_size 10 MB 까지 PUT 한 번; 더 크면
+   block_size 를 올리거나 블록마다 PUT) → `asset_finalize_file_upload` (filename, 받은 transfer_document 그대로) →
+   응답의 `presignedAssetUrl` 이 imageURI. https URL 이 없으면 `asset_get_presigned_urls` ({id: assetId, sourceType: "acp"}) 의 `previewUrl`.
+3. 부위: 아래 호출을 **모든 그림에 똑같이** 하고, 결과 `outputUrl` 을 `curl -L -o masks/X/<파일> "<url>"` 로 받는다.
 
-   | bodyParts | 파일 | bodyParts | 파일 |
-   |---|---|---|---|
-   | `Hair` | `hair.png` | `Left Leg` / `Right Leg` | `leftleg.png` / `rightleg.png` |
-   | `Face` | `face.png` | `Left Shoe` + `Right Shoe` (한 번에) | `shoes.png` |
-   | `Neck` | `neck.png` | `Left Hand` / `Right Hand` | `lefthand.png` / `righthand.png` |
-   | `Upper Clothes` | `upper.png` | `image_select_by_prompt` "the fluffy animal tail" | `tail.png` |
-   | `Lower Clothes` | `lower.png` | bodyParts 없이 (B 의 장면 그림에 꼭) | `subject.png` |
-   | `Coat` | `coat.png` | | |
-4. 선화: `image_vectorize` → SVG 를 `vector.svg` 로 저장 (cairosvg 를 못 쓰면 그림과 같은 크기로 렌더한 `vector.png`).
-- "bare skin" 같은 피부 프롬프트는 거절된다 → 피부는 Face / Neck / Hand / Leg 부위로 받는다.
-- Adobe 의 Left/Right 는 해부학 기준이다 (캐릭터의 왼쪽 = 정면 그림에서 화면 오른쪽). 이름을 바꾸지 않는다.
-- 겹치는 마스크: 다리 − 신발. 명령은 위 이름 순서로 먼저 온 부위에 겹친 곳을 준다 (shoes 가 leftleg 보다 먼저) → 손으로 빼지 않아도 된다.
-- 마스크 크기가 그림과 달라도 명령이 맞춘다. 거의 빈 마스크(수십 화소)는 그냥 둔다 — 전체 곡선으로 간다.
+   | 호출 | 파일 |
+   |---|---|
+   | `image_select_subject` bodyParts `["Hair"]` | `hair.png` |
+   | bodyParts `["Face", "Neck", "Left Arm", "Right Arm"]` (한 번에) | `skin.png` |
+   | bodyParts `["Left Hand", "Right Hand"]` | `hands.png` |
+   | bodyParts `["Left Shoe", "Right Shoe"]` | `shoes.png` |
+   | bodyParts `["Left Leg", "Right Leg"]` | `legs.png` |
+   | `image_select_by_prompt` prompt "the fluffy animal tail" | `tail.png` |
+   | `image_select_subject` bodyParts 없이 (B 의 장면 그림) | `subject.png` |
+   | C 만: bodyParts `["Upper Clothes"]` / `["Lower Clothes"]` / `["Coat"]` | `upper.png` / `lower.png` / `coat.png` |
+
+   - B 는 옷을 받지 않는다: 이름 붙은 부위가 덮지 않은 나머지가 자동으로 `rest` 부위가 된다 (프레임과 장면 둘 다).
+   - C 의 옷: 결과가 거의 비었거나 (인물의 1 % 미만) 인물 전체면 버리고, 보이는 옷마다 `image_select_by_prompt` 한 번
+     ("the vest", "the shirt", "the sleeves", "the belt", "the skirt", "the gloves" ...) 해서 `<묶음>_<옷>.png` 로 저장한다:
+     겉옷·조끼·벨트 → `coat_`, 셔츠·튜닉·소매 → `upper_`, 치마·반바지·바지 → `lower_`, 장갑 → `hands_`. 같은 묶음은 합쳐진다.
+     (린 P01: Upper Clothes 27 화소, Coat 121 화소였다 → 옷 프롬프트 없이 C 는 검사를 못 넘었다.)
+4. 선화: `image_vectorize` → SVG 를 `vector.svg` 로. 프레임과 원본만 (장면 그림·참고 그림은 필요 없다).
+   cairosvg 를 못 쓰면 그림과 같은 크기로 렌더한 `vector.png`.
+- "bare skin" 같은 피부 프롬프트는 거절된다 → 피부는 위 bodyParts 로. Adobe 의 Left/Right 는 해부학 기준이다. 묶은 호출이 한쪽만
+  돌려주거나 (린: 손 하나, 다리 하나) 아무것도 못 찾으면 그대로 둔다 — 그 부위가 없는 것으로 친다.
+- 겹친 곳은 `parts.py` 이름 순서로 먼저 온 부위가 가진다 (shoes 가 legs 보다, upper 가 coat 보다 먼저) → 손으로 빼지 않는다.
+  마스크 크기가 그림과 달라도 명령이 맞춘다. 장면의 인물 = `subject.png` + 모든 부위 (subject 가 꼬리를 놓쳐도 된다).
 
 ## 세 방법 (가진 그림으로 고른다)
 **A. 참고 팩** — 중립 프레임 + 같은 포즈를 장면 빛으로 칠한 참고, 같은 방향의 프레임들 (Adobe 불필요).
@@ -55,7 +68,7 @@ python relight.py apply scenes/S.json frames/*.png -o out/ --pack scenes/S.pack 
 python relight.py blend-fit frames/idle.png scene.png -o blend.json --sheet check.png   # idle = 화가가 그린 그 프레임
 python relight.py blend blend.json frames/*.png -o out/ --sheet ba.png
 ```
-**C. 참고 룩** — 원본 + 같은 포즈의 빛 받은 참고(투명 배경; 아니면 먼저 `image_remove_background`) → 다른 프레임·동작.
+**C. 참고 룩** — 원본 + 같은 포즈의 빛 받은 참고(투명 배경) → 다른 프레임·동작.
 ```bash
 python relight.py look-fit orig.png lamp_ref.png -o look_lamp.json --sheet check.png
 python relight.py look look_lamp.json frames/*.png -o out/ --sheet ba.png
@@ -68,22 +81,20 @@ python relight.py look look_lamp.json frames/*.png -o out/ --sheet ba.png
 apply: 방향 묶음마다 `pass the pack gates` ≥ 80 % 면 참고 빛. `wash+rim fallback` 프레임은 참고 빛을 못 받은 것이다.
 시트: 중립 | 결과 | 참고 — 가슴·윤곽 모양이 원화 그대로여야 한다.
 
-**B** blend-fit 표: 부위마다 `L* median`·`a*`·`b*` 가 장면과 3 이내 (`<- off by > 3` 없음; 린 화가 장면에서는 1 이내),
-`alpha = plain downscale True`, `line px lighter 0`, `Adobe parts cover` ≥ 70 %.
-`outer edge L*` 는 참고용 (린: 머리 50 / 장면 53, 피부 49 / 56, 부츠 17 / 14, 꼬리 30 / 32, 옷 33 / 43 — 옷은 원래 외곽선이
-더 어둡고 밝히지 않는 규칙이라 남는 차이). 시트 (줄인 원본 | 블렌드 | 장면, 이어서 머리 확대): 색·톤이 장면 속 캐릭터 같고, 외곽선 두께·
-어둡기가 장면 같고, 테두리 번짐과 머리의 검은 얼룩이 없어야 한다.
-blend: 프레임마다 `Adobe parts cover` < 50 % 면 `<- under 50 %: check the masks` → 그 프레임 마스크를 다시 받는다.
+**B** blend-fit: 표에 `<- off by > 3` 이 없다 (인물의 5 % 이상인 부위만 검사; `small part`·`whole` 줄은 참고용),
+`named Adobe parts cover` ≥ 50 % (`under 50 %` 없음), `alpha = plain downscale True`, `line px lighter 0`.
+`outer edge L*` 는 참고용 — 옷 외곽선은 장면보다 어두울 수 있다 (선화를 밝히지 않는 규칙).
+시트 (줄인 원본 | 블렌드 | 장면, 이어서 머리 확대): 색·톤이 장면 속 캐릭터 같고, 외곽선이 장면 같고, 테두리 번짐과 머리의 검은
+얼룩이 없어야 한다. blend: `<- no mask for: X` 가 뜬 프레임은 X 가 그림에 보이면 그 마스크를 다시 받는다 (맨발이면 shoes 는 정상).
 
 **C** look-fit: `light from N deg` (0 = 화면 오른쪽, 90 = 위, 180 = 왼쪽) 가 참고에서 빛이 오는 쪽과 맞고,
-`self colour error dE` ≤ 8 이면서 `unchanged` 의 절반 이하 (검증: 린 달 + 랜턴 7.7~7.9, 린 달빛 5.8, 브루나 램프 5.0;
-그대로 두면 19.1 / 33.6 / 15.2),
-`alpha identical True, line px lighter 0, new white px 0` (`CHECK FAILED` 없음).
-시트 (원본 | 룩 | 맞춘 참고, 이어서 머리 확대): 빛 쪽이 참고처럼 밝고 따뜻하고, 줄무늬·이음매·하얗게 날아간 곳이 없어야 한다.
-look: 프레임마다 같은 세 숫자. before|after 시트에서 빛 쪽 다리가 더 밝다 (발이 바뀌면 밝은 다리도 바뀐다).
+`self colour error dE` ≤ 8 이면서 `unchanged` 의 절반 이하 (위 마스크로: 린 달 + 랜턴 7.8, 린 달빛 6.0, 브루나 램프 5.0),
+`alpha identical True, line px lighter 0, new white px 0` (`CHECK FAILED` 없음). 참고가 원본과 절반도 안 겹치면 명령이
+`CHECK FAILED` 로 거부한다 (같은 포즈가 아니다). 시트 (원본 | 룩 | 맞춘 참고, 이어서 머리 확대): 빛 쪽이 참고처럼 밝고 따뜻하고,
+줄무늬·이음매·하얗게 날아간 곳이 없어야 한다. look: 프레임마다 같은 세 숫자; before|after 시트에서 빛 쪽 다리가 더 밝다.
 
 알려진 한계 (통과로 친다): C — 가는 다리 가운데 희미한 줄(2배 확대에서만), 달빛에서 올리브 천이 청록, 밝은 재질은 참고만큼
-밝아지지 않고 주황으로 남는다. B — 옷 곡선 하나가 어두운 조끼와 밝은 소매를 같이 다뤄 소매가 조금 회색이다.
+밝아지지 않고 주황으로 남는다. B — `rest` 곡선 하나가 어두운 조끼와 밝은 소매를 같이 다룬다; 외곽선이 장면보다 조금 어둡다.
 
 ## 절대 규칙
 - 알파를 바꾸지 않는다 (B 는 원래 알파를 게임 높이로 줄인 것 그대로). Adobe 결과 그림의 알파를 쓰지 않는다.
@@ -95,5 +106,5 @@ look: 프레임마다 같은 세 숫자. before|after 시트에서 빛 쪽 다�
 
 ## 테스트
 ```bash
-python -m pytest -q        # 합성 그림만, 86개
+python -m pytest -q        # 합성 그림만, 89개
 ```

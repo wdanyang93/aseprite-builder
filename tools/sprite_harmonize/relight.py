@@ -301,7 +301,7 @@ def _f32(x):
 
 
 def _outputs(a):
-    multi = len(a.frames) > 1 or os.path.isdir(a.out) or a.out.endswith(os.sep)
+    multi = len(a.frames) > 1 or os.path.isdir(a.out) or a.out.endswith(os.sep) or not os.path.splitext(a.out)[1]
     if multi:
         os.makedirs(a.out, exist_ok=True)
     return [(p, os.path.join(a.out, os.path.splitext(os.path.basename(p))[0] + ".png") if multi else a.out)
@@ -366,6 +366,7 @@ def cmd_blend_fit(a):
     ssil, tl = out[..., 3] >= 0.5, to_lab(tgt)
     size = out.shape[1::-1]
     print("part        px game/scene   L* median (scene)   a* (scene)    b* (scene)    outer edge L* (scene)")
+    n_fig = look["parts"].get("_all", {"n": [int(ssil.sum())]})["n"][0]
     for k, p in look["parts"].items():
         sm = ssil.astype(np.float32) if k == "_all" else cv2.resize(parts[k], size, interpolation=cv2.INTER_AREA)
         tm = tsil if k == "_all" else tparts[k] >= 0.5
@@ -374,14 +375,20 @@ def cmd_blend_fit(a):
         xr = BL._stats(sl, ssil, sm, P["edge"], (50,), rim=True)[0]
         yr = BL._stats(tl, tsil, tm, P["edge"], (50,), rim=True)[0]
         off = xs is None or ys is None or max(abs(xs[0] - ys[0]), abs(sa - ta), abs(sb - tb)) > 3
+        # checked: parts of >= 5 % of the figure (thin ones mix with their neighbours' curves across the feather);
+        # 'whole' is information only: with 'rest' every figure pixel has a part curve
+        info = k == "_all" or p["n"][0] < 0.05 * n_fig
         fmt = lambda v: "  -  " if v is None else f"{v[0]:5.1f}"
         print(f"{'whole' if k == '_all' else k:10s} {p['n'][0]:7d}/{p['n'][1]:<7d}  {fmt(xs)} ({fmt(ys)})"
               f"      {sa:5.1f} ({ta:5.1f})  {sb:5.1f} ({tb:5.1f})  {fmt(xr)} ({fmt(yr)})"
-              + ("   <- off by > 3" if off else ""))
+              + ("" if k == "_all" else "   (small part: information only)" if info
+                 else "   <- off by > 3" if off else ""))
     miss = [k for k in parts if k not in look["parts"]]
     if miss:
-        print("  no own curve (missing in the scene masks or too small; whole-figure curve):", ", ".join(miss))
-    print(f"named Adobe parts cover {_coverage(parts, f[..., 3], named):.0%} of the figure (the rest: 'rest')")
+        print("  too small for an own curve (whole-figure curve):", ", ".join(miss))
+    cov = _coverage(parts, f[..., 3], named)
+    print(f"named Adobe parts cover {cov:.0%} of the figure (the rest: 'rest')"
+          + ("  <- under 50 %: check the masks" if cov < 0.5 else ""))
     full = BL.apply_blend(f, parts, look, None, lines)     # the line hold acts at full resolution
     held = (lines >= 0.5) & (f[..., 3] > 0)
     dl = (to_lab(full[..., :3])[..., 0] - to_lab(f[..., :3])[..., 0])[held]
@@ -416,9 +423,12 @@ def cmd_blend(a):
             failed += 1
             print(f"{p}: FAILED ({e.__class__.__name__}: {e}) - skipped")
             continue
-        cov = _coverage(parts, f[..., 3], [k for k in look["parts"] if k != "rest"])
+        known = [k for k in look["parts"] if k not in ("_all", "rest")]
+        cov = _coverage(parts, f[..., 3], known)
+        gone = [k for k in known if k not in parts or not (parts[k] >= 0.5).any()]
         print(f"{p} -> {dst}  {o.shape[1]}x{o.shape[0]}  named Adobe parts cover {cov:.0%} of the figure"
-              f"{'  <- under 50 %: check the masks' if cov < 0.5 else ''}  {time.time() - t:.1f}s")
+              + (f"  <- no mask for: {', '.join(gone)} (takes the rest curve)" if gone else "")
+              + f"  {time.time() - t:.1f}s")
         if a.sheet:
             thumbs_in.append(_thumb(BL.downscale(f, height))); thumbs_out.append(_thumb(o))
     if a.sheet and thumbs_in:
@@ -446,23 +456,24 @@ def cmd_look_fit(a):
     parts, lines = _adobe(a.masks, a.original, o.shape)
     t = time.time()
     rw, conf = LK.align_ref(o, r)                          # once: for the fit and for the self check
+    valid = (rw[..., 3] > 0.5) & (conf > 0.3) & (o[..., 3] > 0) & (lines < 0.5)
+    share = valid.sum() / max(int((o[..., 3] > 0).sum()), 1)
+    if share < 0.5:                                        # the self check would measure (almost) nothing
+        raise SystemExit(f"CHECK FAILED: the reference lines up with the original on {share:.0%} of the figure "
+                         "(under half) - same pose needed; no look written")
     look = LK.fit_look(o, rw, parts, lines, align=False, align_conf=conf)
     with open(a.out, "w") as fh:
         json.dump(look, fh)
     x = LK.apply_look(o, parts, look, lines)
     print(f"reference look -> {a.out}  ({time.time() - t:.0f}s)  light from {look['az']:.0f} deg "
           "(0 = screen right, 90 = top, 180 = left)")
-    valid = (rw[..., 3] > 0.5) & (conf > 0.3) & (o[..., 3] > 0) & (lines < 0.5)
     lab_r = to_lab(np.clip(rw[..., :3], 0, 1))
-    de = lambda y: float(np.linalg.norm(to_lab(_f32(y)[..., :3]) - lab_r, axis=-1)[valid].mean()) if valid.any() else 0
+    de = lambda y: float(np.linalg.norm(to_lab(_f32(y)[..., :3]) - lab_r, axis=-1)[valid].mean())
     d0, d1 = de(o), de(x)
-    lined_up = valid.mean() >= 0.5 * (o[..., 3] > 0).mean()
-    good = lined_up and d1 <= 8 and d1 <= 0.5 * d0
+    good = d1 <= 8 and d1 <= 0.5 * d0
     print(f"self colour error dE {d1:.2f} (unchanged {d0:.2f}; pass: <= 8 and <= half of unchanged)"
           f"{'' if good else '  <- CHECK FAILED'}")
-    print(_look_checks(o, x, lines)[0])
-    if not lined_up:
-        print("WARNING: the reference lines up with the original on under half of the figure - same pose needed")
+    print(_look_checks(o, x, lines)[0] + f"  (reference lines up on {share:.0%} of the figure)")
     if a.sheet:
         ref = np.dstack([rw[..., :3], _f32(o)[..., 3]])     # shown with the original's alpha
         _panels([_rgba_tile(o), _rgba_tile(x), _rgba_tile(ref)], a.sheet)

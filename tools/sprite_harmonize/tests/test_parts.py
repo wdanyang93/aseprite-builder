@@ -48,6 +48,21 @@ def test_load_parts_formats_order_and_prefix(tmp_path):
     assert PT.load_parts(str(tmp_path), prefix="zz_") == {}
 
 
+def test_load_parts_joins_group_files(tmp_path):
+    """one image_select_by_prompt per garment, saved as <part>_<garment>.png, loads as one part (union)."""
+    a, b = np.zeros((20, 20), np.uint8), np.zeros((20, 20), np.uint8)
+    a[2:8], b[6:14] = 255, 255
+    Image.fromarray(a).save(tmp_path / "upper_shirt.png")
+    Image.fromarray(b).save(tmp_path / "upper_sleeves.png")
+    Image.fromarray(b).save(tmp_path / "Hands_Gloves.png")
+    Image.fromarray(a).save(tmp_path / "legs.png")
+    Image.fromarray(a).save(tmp_path / "shoes.png")
+    Image.fromarray(b).save(tmp_path / "scarf_red.png")                                 # not a known part: own name
+    P = PT.load_parts(str(tmp_path))
+    assert list(P) == ["hands", "upper", "shoes", "legs", "scarf_red"]                  # shoes before legs
+    assert np.array_equal(P["upper"] >= 0.5, (a > 0) | (b > 0)) and np.array_equal(P["hands"] >= 0.5, b > 0)
+
+
 def _drawing(h, w):
     """White canvas (RGBA): thin dark strokes 2 / 6 / 10 px wide, a wide dark blob, a mid-grey (not dark) block,
     a transparent black hole (not dark) and a dark stroke drawn semi-transparent (an anti-aliased path seam)."""
